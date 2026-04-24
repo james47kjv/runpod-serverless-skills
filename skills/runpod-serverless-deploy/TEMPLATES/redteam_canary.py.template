@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Adversarial red-team canary against a live RunPod serverless endpoint.
+
+Acts like Vals.ai: sends the first N questions from benchmark_data/data/public.txt
+to /v1/chat/completions, records normalized request/response pairs for offline
+parity checks, and writes a per-question report. No silent failures — HTTP
+errors, empty answers, and timeouts are all recorded as distinct failure modes.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import time
+from typing import Any
+
+import requests
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+PUBLIC_TXT = REPO_ROOT / "benchmark_data" / "data" / "public.txt"
+
+
+def _load_questions(limit: int, questions_file: pathlib.Path | None = None) -> list[tuple[int, str]]:
+    path = questions_file or PUBLIC_TXT
+    if not path.exists():
+        raise SystemExit(f"questions file not found at {path}")
+    out: list[tuple[int, str]] = []
+    for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        text = line.strip()
+        if not text:
+            continue
+        out.append((idx, text))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _ask(base_url: str, api_key: str, question: str, timeout: float) -> dict[str, Any]:
+    started = time.time()
+    payload = {
+        "model": "Lamp Account/lamp-finance-v1",
+        "messages": [{"role": "user", "content": question}],
+        "temperature": 0.0,
+        "max_tokens": 2048,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "submit_final_result",
+                    "description": "Submit the final answer and citations.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string"},
+                            "sources": {"type": "array"},
+                            "workspace_id": {"type": "string"},
+                        },
+                        "required": ["answer"],
+                    },
+                },
+            }
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "error_class": exc.__class__.__name__,
+            "error_message": str(exc),
+            "latency_ms": int((time.time() - started) * 1000),
+        }
+    latency_ms = int((time.time() - started) * 1000)
+    record: dict[str, Any] = {
+        "status_code": response.status_code,
+        "latency_ms": latency_ms,
+        "ok": False,
+    }
+    try:
+        data = response.json()
+    except ValueError:
+        record.update(ok=False, error_class="InvalidJSON", raw=response.text[:2000])
+        return record
+    record["response"] = data
+    if response.status_code >= 400:
+        record.update(ok=False, error_class=f"HTTP{response.status_code}")
+        return record
+    answer = _extract_answer(data)
+    record["answer"] = answer
+    record["answer_sha256"] = hashlib.sha256((answer or "").encode("utf-8")).hexdigest()
+    record["ok"] = bool(answer and answer.strip())
+    if not record["ok"]:
+        record["error_class"] = "EmptyAnswer"
+    return record
+
+
+def _extract_answer(response: dict[str, Any]) -> str:
+    choices = response.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    # Tool-call shape
+    for call in (message.get("tool_calls") or []):
+        fn = call.get("function") or {}
+        if fn.get("name") == "submit_final_result":
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (ValueError, TypeError):
+                continue
+            answer = str(args.get("answer") or "").strip()
+            if answer:
+                return answer
+    # Content shape
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    return ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--api-key", default=os.environ.get("RUNPOD_API_KEY", ""))
+    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--environment", default="staging")
+    parser.add_argument("--out", default="reports/redteam/adhoc")
+    parser.add_argument(
+        "--questions-file",
+        default=None,
+        help="Path to a newline-delimited question file. Defaults to benchmark_data/data/public.txt.",
+    )
+    args = parser.parse_args()
+
+    if not args.api_key:
+        raise SystemExit("RUNPOD_API_KEY not set and --api-key not provided")
+
+    out_dir = pathlib.Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    questions_path = pathlib.Path(args.questions_file) if args.questions_file else None
+    questions = _load_questions(args.limit, questions_path)
+    print(f"[canary] {args.environment}: asking {len(questions)} questions against {args.base_url}")
+
+    per_question: list[dict[str, Any]] = []
+    passed = 0
+    for q_num, question in questions:
+        print(f"[canary] q{q_num:03d} ...", flush=True)
+        record = _ask(args.base_url, args.api_key, question, args.timeout)
+        record["q_num"] = q_num
+        record["question"] = question
+        per_question.append(record)
+        (out_dir / f"q{q_num:03d}.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        if record.get("ok"):
+            passed += 1
+            print(f"[canary] q{q_num:03d} OK ({record['latency_ms']}ms)")
+        else:
+            print(
+                f"[canary] q{q_num:03d} FAIL ({record.get('error_class', 'Unknown')}) "
+                f"{record.get('error_message') or ''}"
+            )
+
+    summary = {
+        "environment": args.environment,
+        "base_url": args.base_url,
+        "total": len(questions),
+        "passed": passed,
+        "failed": len(questions) - passed,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "per_question": [
+            {
+                "q_num": rec["q_num"],
+                "ok": rec.get("ok"),
+                "error_class": rec.get("error_class"),
+                "latency_ms": rec.get("latency_ms"),
+                "answer_sha256": rec.get("answer_sha256"),
+            }
+            for rec in per_question
+        ],
+    }
+    (out_dir / "report.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"[canary] DONE: {passed}/{len(questions)} passed. Report at {out_dir / 'report.json'}")
+    return 0 if passed == len(questions) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

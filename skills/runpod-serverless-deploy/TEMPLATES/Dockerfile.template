@@ -1,0 +1,74 @@
+# LAMP Finance — vLLM-based serverless runtime.
+#
+# Contract:
+#   - Base is vLLM's official OpenAI-server image (0.19.1, CUDA 13, Ubuntu 24.04).
+#     We picked this over SGLang because SGLang v0.5.10.post1 has no
+#     CLI-exposed FP4 GEMM backend override, and its default flashinfer_cudnn
+#     FP4 path fails cudnn_frontend.check_support for Qwen3.5 NVFP4 MoE on
+#     Blackwell.
+#   - vLLM has first-class Qwen3.5 MoE + compressed-tensors W4A4 NVFP4 support
+#     (NVIDIA ships nvidia/Qwen3.5-397B-A17B-NVFP4 as the reference model).
+#   - Model weights are NOT baked into this image. RunPod's managed HF cache
+#     (triggered by the spec's `modelName` + `flashboot: true`) places the
+#     pinned snapshot on each worker. start.sh resolves that path for vLLM.
+
+FROM vllm/vllm-openai:v0.19.1-cu130-ubuntu2404
+
+# vLLM's image sets ENTRYPOINT to its OpenAI server. We override with our
+# start.sh which launches both the app (FastAPI harness) and vLLM.
+ENTRYPOINT []
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LAMP_MODE=BENCHMARK_SAFE \
+    LAMP_PROMPT_INJECT_HINTS=0 \
+    LAMP_GRAPHITI_READS=1 \
+    LAMP_GRAPHITI_WRITES=0 \
+    LAMP_BASE=/app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Application deps on top of vLLM runtime. vLLM's base image already has
+# fastapi / uvicorn / pydantic / requests. We just add our specifics.
+COPY services/finance-endpoint/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir \
+    "sec-api>=1.0.30" \
+    "tenacity>=9.0" \
+    "python-dotenv>=1.0" \
+    "huggingface_hub>=0.24"
+
+# --- Harness payload -------------------------------------------------------
+COPY adapters/               /app/adapters/
+COPY extractors/             /app/extractors/
+COPY lamp_evidence_compiler/ /app/lamp_evidence_compiler/
+COPY lamp-evidence-compiler/ /app/lamp-evidence-compiler/
+COPY config/                 /app/config/
+COPY benchmark_data/         /app/benchmark_data/
+COPY benchmark_data_paths.py       /app/
+COPY finance_router.py             /app/
+COPY contract_validator.py         /app/
+COPY metasystem_harness.py         /app/
+COPY programmatic_engine.py        /app/
+COPY direct_answer_constructor.py  /app/
+COPY v4_integration.py             /app/
+COPY services/__init__.py                   /app/services/__init__.py
+COPY services/finance_endpoint/__init__.py  /app/services/finance_endpoint/__init__.py
+COPY services/finance-endpoint/app.py            /app/services/finance-endpoint/app.py
+COPY services/finance-endpoint/agent_runtime.py  /app/services/finance-endpoint/agent_runtime.py
+COPY services/finance-endpoint/start.sh          /app/services/finance-endpoint/start.sh
+RUN chmod +x /app/services/finance-endpoint/start.sh
+
+# Build-context audit artifact
+RUN python3 -c "import hashlib, json, pathlib; \
+root = pathlib.Path('/app'); \
+entries = []; \
+[entries.append({'path': str(p.relative_to(root)), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'size': p.stat().st_size}) \
+ for p in sorted(root.rglob('*')) if p.is_file() and '__pycache__' not in p.parts and not p.name.endswith('.pyc')]; \
+open('/app/BUILD_MANIFEST.json', 'w').write(json.dumps({'entries': entries}, indent=2))"
+
+EXPOSE 8080
+CMD ["bash", "/app/services/finance-endpoint/start.sh"]

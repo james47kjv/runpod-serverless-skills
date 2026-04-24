@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: Harness tests (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (CPU-only subset)
+        # SGLang is not installed on CPU CI — it requires CUDA. We install only
+        # what the test suite needs.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest httpx
+          python -m pip install fastapi uvicorn pydantic sec-api requests tenacity python-dotenv
+      - name: Run CPU test suite
+        env:
+          LAMP_BASE: ${{ github.workspace }}
+        run: |
+          python -m pytest -q \
+            test_metasystem_harness.py \
+            test_router.py \
+            test_validator.py \
+            tests/ \
+            || (echo "::error::CPU test suite failed" && exit 1)
+
+  dockerfile-smoke:
+    name: Dockerfile build-context smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit build context
+        run: python3 scripts/ci/audit_build_context.py
+      - name: Dockerfile lint
+        run: |
+          docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 --ignore DL3013 --ignore DL4006 - \
+            < services/finance-endpoint/Dockerfile || true
+      - name: Parse staging + production specs
+        run: |
+          python3 -c "import json; json.load(open('deploy/runpod/lamp-finance-v1.staging.json'))"
+          python3 -c "import json; json.load(open('deploy/runpod/lamp-finance-v1.production.json'))"

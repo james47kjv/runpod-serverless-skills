@@ -1,0 +1,57 @@
+"""Boot-time integrity assertion for RunPod Serverless FastAPI apps.
+
+Paste this into your app.py immediately after `app = FastAPI(...)` and
+invoke it at module load (NOT inside a startup event — we want to fail
+the container boot, not leave it half-up).
+
+The three invariants enforced (see anti-cheating-contract.md):
+
+  1. <REQUIRED_KEY> (e.g. SEC_EDGAR_API_KEY) MUST be set. Without it
+     every request degrades to "No information available." on 100% of
+     traffic — a silent outage.
+  2. LAMP_OFFLINE_FIXTURES MUST NOT be set in staging/production. Set
+     only by the offline grader (run_local_50.py).
+  3. LAMP_DETERMINISTIC_OVERRIDES MUST NOT be set in staging/production.
+     Same reason as above — canned-answer dispatch belongs offline only.
+
+Adapt:
+  - <APP_REQUIRED_KEY>   → your domain-specific required secret
+  - <APP_OFFLINE_FLAG>   → your domain-specific offline-grading flag (if any)
+  - <APP_OVERRIDE_FLAG>  → your domain-specific override-dispatch flag (if any)
+
+If your app has NO integrity-gating flags, you can reduce this to just
+the required-secret check.
+"""
+
+import os
+
+
+def _assert_runtime_integrity() -> None:
+    """Fail the container loudly at startup if the serverless contract is broken.
+
+    Only enforced when LAMP_ENVIRONMENT is set to 'staging' or 'production'.
+    Test collection and dev imports skip this guard so the module is always
+    importable.
+    """
+    environment = (os.environ.get("LAMP_ENVIRONMENT") or "").strip().lower()
+    if environment not in {"staging", "production"}:
+        return
+
+    required_key = os.environ.get("<APP_REQUIRED_KEY>")  # e.g. "SEC_EDGAR_API_KEY"
+    if not (required_key or "").strip():
+        raise RuntimeError(
+            "<APP_REQUIRED_KEY> is not set. Serverless traffic cannot answer "
+            "without live data access; refusing to boot."
+        )
+
+    for flag in ("<APP_OFFLINE_FLAG>", "<APP_OVERRIDE_FLAG>"):
+        value = (os.environ.get(flag) or "").strip().lower()
+        if value in {"1", "true", "yes"}:
+            raise RuntimeError(
+                f"{flag}=1 is only permitted in the offline grader. "
+                f"Unset it before deploying."
+            )
+
+
+# Call at module load (top-level, NOT inside @app.on_event("startup")):
+_assert_runtime_integrity()

@@ -1,0 +1,27 @@
+{
+  "name": "runpod-serverless",
+  "description": "Ship any FastAPI + GPU inference service to RunPod Serverless as a production-grade LOAD_BALANCER endpoint. Covers image-based immutable releases, HF FlashBoot model caching, integrity gating against answer-injection, propose-review-judge agent runtime, red-team canary scoring, scaler-cascade drain, and the 22 pitfalls learned from LAMP1.",
+  "version": "2.0.0",
+  "author": {
+    "name": "LAMP1 Operator",
+    "email": "admin@lamp.ai"
+  },
+  "homepage": "https://github.com/james47kjv/runpod-serverless-skills",
+  "repository": "https://github.com/james47kjv/runpod-serverless-skills",
+  "license": "MIT",
+  "keywords": [
+    "runpod",
+    "serverless",
+    "deploy",
+    "fastapi",
+    "vllm",
+    "gpu",
+    "inference",
+    "ghcr",
+    "flashboot",
+    "huggingface",
+    "red-team",
+    "canary",
+    "integrity-gating"
+  ]
+}

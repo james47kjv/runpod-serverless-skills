@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# LAMP Finance — vLLM-based endpoint boot.
+#
+# Contract:
+#   - Required env: LAMP_HF_MODEL_REPO, LAMP_HF_MODEL_REVISION.
+#   - Resolves the model path from RunPod's FlashBoot-populated HF cache;
+#     falls back to HF download via HF_TOKEN only if the cache is missing.
+#   - Launches vLLM's OpenAI server on port 30000, FastAPI harness on
+#     port 8080. FastAPI's model client talks to vLLM on 127.0.0.1:30000/v1.
+#   - No silent failures: every boot stage emits structured JSON; every
+#     process exit (including status=0) is treated as a boot failure.
+
+set -euo pipefail
+
+log() {
+    printf '{"ts":"%s","level":"%s","stage":"boot","event":"%s","msg":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
+        "$(printf '%s' "$3" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')" >&2
+}
+
+die() { log ERROR "$1" "$2"; exit 1; }
+
+LAMP_HF_MODEL_REPO="${LAMP_HF_MODEL_REPO:-}"
+LAMP_HF_MODEL_REVISION="${LAMP_HF_MODEL_REVISION:-}"
+[[ -z "${LAMP_HF_MODEL_REPO}" ]] && die missing_model_repo "LAMP_HF_MODEL_REPO must be set by the endpoint spec"
+[[ -z "${LAMP_HF_MODEL_REVISION}" ]] && die missing_model_revision "LAMP_HF_MODEL_REVISION must be set (pin revision)"
+
+RUNPOD_HF_CACHE_ROOT="${LAMP_RUNPOD_HF_CACHE_ROOT:-/runpod-volume/huggingface-cache/hub}"
+REPO_CACHE_DIR="models--${LAMP_HF_MODEL_REPO//\//--}"
+SNAPSHOT_PATH="${RUNPOD_HF_CACHE_ROOT}/${REPO_CACHE_DIR}/snapshots/${LAMP_HF_MODEL_REVISION}"
+
+if [[ -d "${SNAPSHOT_PATH}" ]]; then
+    log INFO model_cache_hit "FlashBoot cache hit at ${SNAPSHOT_PATH}"
+    MODEL_PATH="${SNAPSHOT_PATH}"
+else
+    log WARN model_cache_miss "FlashBoot cache miss at ${SNAPSHOT_PATH}; attempting HF download"
+    [[ -z "${HF_TOKEN:-}" ]] && die model_unavailable "FlashBoot cache missing AND HF_TOKEN unset; cannot self-heal"
+    MODEL_PATH="$(
+        LAMP_HF_MODEL_REPO="${LAMP_HF_MODEL_REPO}" \
+        LAMP_HF_MODEL_REVISION="${LAMP_HF_MODEL_REVISION}" \
+        LAMP_HF_CACHE_DIR="${LAMP_HF_CACHE_DIR:-${RUNPOD_HF_CACHE_ROOT%/hub}}" \
+        python3 - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+kwargs = {
+    "repo_id": os.environ["LAMP_HF_MODEL_REPO"],
+    "revision": os.environ["LAMP_HF_MODEL_REVISION"],
+    "token": os.environ.get("HF_TOKEN") or None,
+}
+cache = os.environ.get("LAMP_HF_CACHE_DIR")
+if cache:
+    kwargs["cache_dir"] = cache
+print(snapshot_download(local_files_only=False, **kwargs))
+PY
+    )"
+    [[ -z "${MODEL_PATH}" || ! -d "${MODEL_PATH}" ]] && die model_download_failed "snapshot_download produced no usable path"
+    log INFO model_downloaded "Model resolved to ${MODEL_PATH}"
+fi
+
+export LAMP_MODEL_PATH="${MODEL_PATH}"
+
+VLLM_PORT="${LAMP_VLLM_PORT:-30000}"
+API_PORT="${PORT:-${LAMP_API_PORT:-8080}}"
+READY_FILE="${LAMP_READY_FILE:-/tmp/lamp-finance.ready}"
+rm -f "${READY_FILE}"
+export LAMP_READY_FILE="${READY_FILE}"
+export LAMP_WORKSPACE_ROOT="${LAMP_WORKSPACE_ROOT:-/tmp/lamp-workspaces}"
+mkdir -p "${LAMP_WORKSPACE_ROOT}"
+
+# vLLM OpenAI server runs on :30000. FastAPI harness talks to it.
+export LAMP_MODEL_BASE_URL="${LAMP_MODEL_BASE_URL:-http://127.0.0.1:${VLLM_PORT}/v1}"
+export LAMP_PUBLIC_MODEL_NAME="${LAMP_PUBLIC_MODEL_NAME:-Lamp Account/lamp-finance-v1}"
+
+# vLLM-served model name (internal, what vLLM exposes on its /v1/models).
+VLLM_SERVED_NAME="${LAMP_VLLM_SERVED_NAME:-lamp-finance-v1}"
+
+cleanup() {
+    if [[ -n "${API_PID:-}" ]] && kill -0 "${API_PID}" 2>/dev/null; then
+        kill "${API_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${VLLM_PID:-}" ]] && kill -0 "${VLLM_PID}" 2>/dev/null; then
+        kill "${VLLM_PID}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+log INFO launching_api "FastAPI on :${API_PORT}"
+cd /app
+python3 -m uvicorn services.finance_endpoint:app \
+    --host 0.0.0.0 --port "${API_PORT}" --workers 1 \
+    > /tmp/uvicorn.log 2>&1 &
+API_PID=$!
+
+# Launch vLLM OpenAI server.
+#   --enable-prefix-caching: standard Qwen3.5 NVFP4 recipe.
+#   --reasoning-parser qwen3: per vLLM Qwen3.5 recipe.
+#   --gpu-memory-utilization 0.85: matches the SGLang mem-fraction we used.
+#   --max-model-len 32768: Vals questions fit comfortably in 32k; full 262k
+#     context blows up KV memory and is unnecessary.
+#   --trust-remote-code: for Qwen3.5 custom modeling.
+#   LAMP_VLLM_EXTRA_ARGS: escape hatch for per-deploy tuning.
+log INFO launching_vllm "vLLM on :${VLLM_PORT} serving ${MODEL_PATH}"
+python3 -m vllm.entrypoints.openai.api_server \
+    --model "${MODEL_PATH}" \
+    --served-model-name "${VLLM_SERVED_NAME}" \
+    --host 0.0.0.0 --port "${VLLM_PORT}" \
+    --trust-remote-code \
+    --enable-prefix-caching \
+    --reasoning-parser qwen3 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.85 \
+    ${LAMP_VLLM_EXTRA_ARGS:-} \
+    > /tmp/vllm.log 2>&1 &
+VLLM_PID=$!
+
+log INFO waiting_vllm "waiting for vLLM /health"
+READY=0
+for i in $(seq 1 360); do
+    if ! kill -0 "${API_PID}" 2>/dev/null; then
+        log ERROR api_exit_before_ready "FastAPI exited before vLLM ready (after ${i}s)"
+        tail -n 200 /tmp/uvicorn.log >&2 || true
+        exit 1
+    fi
+    if ! kill -0 "${VLLM_PID}" 2>/dev/null; then
+        log ERROR vllm_exit_before_ready "vLLM exited before ready (after ${i}s)"
+        tail -n 200 /tmp/vllm.log >&2 || true
+        exit 1
+    fi
+    if curl -sf "http://127.0.0.1:${VLLM_PORT}/health" > /dev/null; then
+        READY=1
+        log INFO vllm_ready "vLLM ready after ${i}s"
+        break
+    fi
+    sleep 5
+done
+
+[[ "${READY}" != "1" ]] && { log ERROR vllm_never_ready "vLLM /health never succeeded in 1800s"; tail -n 200 /tmp/vllm.log >&2 || true; exit 1; }
+
+mkdir -p "$(dirname "${READY_FILE}")"
+touch "${READY_FILE}"
+log INFO runtime_ready "Ready file written; accepting traffic"
+
+STATUS=0
+EXITED_PID=""
+if ! wait -n -p EXITED_PID "${VLLM_PID}" "${API_PID}"; then
+    STATUS=$?
+fi
+
+EXITED_NAME="child"
+EXITED_LOG=""
+if [[ "${EXITED_PID:-}" == "${API_PID}" ]]; then
+    EXITED_NAME="FastAPI"; EXITED_LOG="/tmp/uvicorn.log"
+elif [[ "${EXITED_PID:-}" == "${VLLM_PID}" ]]; then
+    EXITED_NAME="vLLM"; EXITED_LOG="/tmp/vllm.log"
+fi
+
+log ERROR child_exit "${EXITED_NAME} exited with status ${STATUS}"
+[[ "${STATUS}" == "0" ]] && { log ERROR unexpected_clean_exit "Treating unexpected ${EXITED_NAME} exit(0) as failure"; STATUS=1; }
+[[ -n "${EXITED_LOG}" ]] && tail -n 200 "${EXITED_LOG}" >&2 || true
+
+cleanup
+exit "${STATUS}"

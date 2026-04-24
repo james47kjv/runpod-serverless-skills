@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Autonomous deploy + smart watch + canary.
+# Deploys staging with a new image, watches for worker health, runs canary.
+# Costs nothing if the worker crash-loops — stops workersMax=0 on first failure.
+#
+# Usage: autonomous_deploy.sh <image_ref> [canary_limit]
+
+set -euo pipefail
+
+IMAGE="${1:-}"
+CANARY="${2:-5}"
+BOOT_BUDGET_SEC="${BOOT_BUDGET_SEC:-900}"
+
+[[ -z "$IMAGE" ]] && { echo "usage: $0 <image_ref> [canary_limit]" >&2; exit 1; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+# Load env
+extract() { grep -E "^${1}=" "$HOME/.env" | head -1 | sed "s/^${1}=//" | sed 's/^["'\''"]\(.*\)["'\''"]$/\1/'; }
+export GHCR_PAT="${GHCR_PAT:-$(extract GHCR_PAT)}"
+export HF_TOKEN="${HF_TOKEN:-$(extract HF_TOKEN)}"
+export RUNPOD_API_KEY="${RUNPOD_API_KEY:-$(extract RUNPOD_API_KEY)}"
+export SEC_EDGAR_API_KEY="${SEC_EDGAR_API_KEY:-$(extract SEC_EDGAR_API_KEY)}"
+
+[[ -z "$RUNPOD_API_KEY" ]] && { echo "RUNPOD_API_KEY unset" >&2; exit 1; }
+
+endpoint_id="pluwnqk2codj00"
+
+tstamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { echo "[$(tstamp)] [auto-deploy] $*" >&2; }
+
+throttle() {
+    local min="$1" max="$2"
+    curl -sS "https://api.runpod.io/graphql" \
+        -H "Authorization: Bearer $RUNPOD_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"query\":\"mutation { saveEndpoint(input: { id: \\\"$endpoint_id\\\", name: \\\"lamp-finance-v1-staging\\\", templateId: \\\"etq1ryzcgg\\\", gpuIds: \\\"BLACKWELL_96,BLACKWELL_180,HOPPER_141\\\", gpuCount: 1, workersMin: $min, workersMax: $max, idleTimeout: 300, scalerType: \\\"REQUEST_COUNT\\\", scalerValue: 1, type: \\\"LB\\\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }\"}" \
+        2>&1 | py -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d) if 'errors' not in d else d)"
+}
+
+# 1. Run the image update via deploy_endpoint (this updates template + endpoint) but
+#    skip its probe by terminating early once we see the endpoint update succeed.
+log "Updating template + endpoint to image $IMAGE"
+py scripts/serverless/deploy_endpoint.py \
+    --spec deploy/runpod/lamp-finance-v1.staging.json \
+    --image "$IMAGE" \
+    --registry-auth-name ghcr-lamp1 \
+    --registry-username james47kjv \
+    --registry-password-env GHCR_PAT > /tmp/deploy.log 2>&1 &
+DEPLOY_PID=$!
+
+# Give the deploy 30s to update template+endpoint (fast), then watch the worker ourselves
+sleep 30
+
+log "Forcing workersMin=1 to spawn a worker (watch budget: ${BOOT_BUDGET_SEC}s)"
+throttle 1 1
+
+start_ts=$(date -u +%s)
+deadline=$((start_ts + BOOT_BUDGET_SEC))
+last_info=""
+worker_ever_alive=0
+ready=0
+
+while [[ $(date -u +%s) -lt $deadline ]]; do
+    # Check /ping
+    ping=$(curl -sS --max-time 15 "https://$endpoint_id.api.runpod.ai/ping" \
+              -H "Authorization: Bearer $RUNPOD_API_KEY" 2>/dev/null || true)
+    if echo "$ping" | grep -q 'ready'; then
+        log "/ping reports ready: $ping"
+        ready=1
+        break
+    fi
+    # Worker state
+    info=$(curl -sS --max-time 10 "https://rest.runpod.io/v1/endpoints/$endpoint_id?includeWorkers=true" \
+              -H "Authorization: Bearer $RUNPOD_API_KEY" 2>/dev/null | py -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print('probe-failed')
+    sys.exit(0)
+ws=d.get('workers') or []
+if not ws:
+    print(f'no-worker standby={d.get(\"workersStandby\")}')
+else:
+    w=ws[0]
+    st=w.get('status')
+    err=(w.get('lastError') or '').replace('\\n',' ')[:200]
+    print(f'wid={w.get(\"id\")} status={st} lastError={err}')
+" 2>/dev/null || echo "probe-failed")
+
+    if [[ "$info" != "$last_info" ]]; then
+        log "$info"
+        last_info="$info"
+    fi
+
+    case "$info" in
+        *"status=RUNNING"*|*"status=IDLE"*|*"status=READY"*) worker_ever_alive=1 ;;
+        *"lastError="*[!\ ]*)
+            log "FAIL: worker reported a lastError; aborting"
+            throttle 0 0
+            wait "$DEPLOY_PID" 2>/dev/null || true
+            exit 1
+            ;;
+    esac
+    sleep 20
+done
+
+if [[ $ready -ne 1 ]]; then
+    log "BOOT TIMEOUT after ${BOOT_BUDGET_SEC}s; throttling to 0 workers"
+    throttle 0 0
+    wait "$DEPLOY_PID" 2>/dev/null || true
+    tail -50 /tmp/deploy.log >&2 || true
+    exit 1
+fi
+
+log "Worker healthy — running ${CANARY}-question canary"
+report_dir="reports/redteam/auto-$(date -u +%Y%m%d-%H%M%S)"
+mkdir -p "$report_dir"
+
+if py scripts/serverless/redteam_canary.py \
+    --base-url "https://$endpoint_id.api.runpod.ai" \
+    --api-key "$RUNPOD_API_KEY" \
+    --limit "$CANARY" \
+    --environment staging \
+    --out "$report_dir"; then
+    log "CANARY PASSED ${CANARY}/${CANARY}"
+else
+    log "CANARY had failures — inspect $report_dir/report.json"
+    # Don't tear down — leave endpoint up for inspection
+fi
+
+log "Leaving endpoint at workersMin=1 for further testing"
+wait "$DEPLOY_PID" 2>/dev/null || true
+tail -10 /tmp/deploy.log >&2 || true

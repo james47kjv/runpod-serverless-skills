@@ -1,0 +1,633 @@
+#!/usr/bin/env python3
+"""Create or update a RunPod Serverless template and endpoint from a deployment spec."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+import requests
+
+API_BASE = "https://rest.runpod.io/v1"
+GRAPHQL_API_BASE = "https://api.runpod.io/graphql"
+_PLACEHOLDER_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+class RunpodApiError(RuntimeError):
+    """Raised when the RunPod API returns an unexpected response."""
+
+
+class GraphQLEnum(str):
+    """Marker for GraphQL enum values that must not be quoted."""
+
+
+def _local_env_candidates() -> tuple[Path, ...]:
+    return (Path.home() / ".env", Path.cwd() / ".env")
+
+
+def _load_local_env() -> None:
+    for candidate in _local_env_candidates():
+        if not candidate.exists():
+            continue
+        for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            os.environ[key] = value.strip()
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spec", required=True, help="Path to deploy/runpod/*.json spec.")
+    parser.add_argument(
+        "--image",
+        default="",
+        help="Override the registry image. Defaults to spec.registryImage if present.",
+    )
+    parser.add_argument(
+        "--registry-auth-name",
+        default="",
+        help="Create or reuse a RunPod container registry auth with this name.",
+    )
+    parser.add_argument("--registry-username", default="", help="Username for the private container registry.")
+    parser.add_argument(
+        "--registry-password-env",
+        default="",
+        help="Environment variable containing the private registry password or access token.",
+    )
+    parser.add_argument(
+        "--public-registry",
+        action="store_true",
+        help="Skip registry auth creation and treat the image as publicly pullable.",
+    )
+    return parser.parse_args()
+
+
+def _load_json(path: str | Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _git_sha(short: bool) -> str:
+    env_key = "GITHUB_SHA"
+    env_value = os.environ.get(env_key, "").strip()
+    if env_value:
+        return env_value[:7] if short else env_value
+    args = ["git", "rev-parse"]
+    if short:
+        args.append("--short")
+    args.append("HEAD")
+    return subprocess.check_output(args, text=True).strip()
+
+
+def _resolve_placeholders(
+    value: str,
+    extra_variables: dict[str, str] | None = None,
+    *,
+    strict: bool = True,
+) -> str:
+    variables = {
+        "GIT_SHA": _git_sha(short=False),
+        "GIT_SHA_SHORT": _git_sha(short=True),
+    }
+    if extra_variables:
+        variables.update(extra_variables)
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in variables:
+            return variables[name]
+        env_value = os.environ.get(name)
+        if env_value is None or env_value == "":
+            if strict:
+                raise SystemExit(f"required placeholder variable is not set: {name}")
+            return match.group(0)
+        return env_value
+
+    return _PLACEHOLDER_RE.sub(replace, value)
+
+
+def _resolve_env_values(env: dict[str, Any]) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for key, value in env.items():
+        if isinstance(value, str):
+            resolved[key] = _resolve_placeholders(value, resolved)
+            continue
+        resolved[key] = value
+    return resolved
+
+
+def _resolve_string_list(values: list[Any], extra_variables: dict[str, str] | None = None) -> list[Any]:
+    resolved: list[Any] = []
+    for value in values:
+        if isinstance(value, str):
+            resolved.append(_resolve_placeholders(value, extra_variables))
+            continue
+        resolved.append(value)
+    return resolved
+
+
+def _load_start_script(path: str | Path) -> str:
+    raw_text = Path(path).read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
+    if lines and lines[0].startswith("#!"):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def _graphql_request(token: str, query: str) -> Any:
+    response = requests.post(
+        GRAPHQL_API_BASE,
+        headers=_headers(token),
+        json={"query": query},
+        timeout=120,
+    )
+    if response.status_code != 200:
+        raise RunpodApiError(
+            f"POST /graphql failed: {response.status_code} {response.text[:500]}"
+        )
+    payload = response.json()
+    if payload.get("errors"):
+        raise RunpodApiError(f"RunPod GraphQL returned errors: {payload['errors']!r}")
+    return payload.get("data") or {}
+
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    token: str,
+    expected: tuple[int, ...] = (200,),
+    payload: dict[str, Any] | list[Any] | None = None,
+) -> Any:
+    response = requests.request(
+        method,
+        f"{API_BASE}{path}",
+        headers=_headers(token),
+        json=payload,
+        timeout=120,
+    )
+    if response.status_code not in expected:
+        raise RunpodApiError(
+            f"{method} {path} failed: {response.status_code} {response.text[:500]}"
+        )
+    if response.status_code == 204 or not response.content:
+        return None
+    return response.json()
+
+
+def _endpoint_details(*, token: str, endpoint_id: str) -> dict[str, Any]:
+    details = _request("GET", f"/endpoints/{endpoint_id}?includeWorkers=true", token=token)
+    if not isinstance(details, dict):
+        raise RunpodApiError(f"GET /endpoints/{endpoint_id} returned unexpected payload")
+    return details
+
+
+def _stop_worker(*, token: str, worker_id: str) -> None:
+    query = (
+        "mutation { podStop(input: { podId: "
+        + json.dumps(worker_id)
+        + " }) { id desiredStatus } }"
+    )
+    try:
+        _graphql_request(token, query)
+    except RunpodApiError as exc:
+        if "Attempted to stop pod that does not exist." in str(exc):
+            print(f"[rollout] stale worker already disappeared: {worker_id}", flush=True)
+            return
+        raise
+
+
+def _registry_auth_id(
+    *,
+    token: str,
+    auth_name: str,
+    username: str,
+    password: str,
+) -> str:
+    auths = _request("GET", "/containerregistryauth", token=token)
+    for auth in auths:
+        if auth.get("name") == auth_name:
+            return str(auth["id"])
+
+    created = _request(
+        "POST",
+        "/containerregistryauth",
+        token=token,
+        expected=(200, 201),
+        payload={
+            "name": auth_name,
+            "username": username,
+            "password": password,
+        },
+    )
+    return created["id"]
+
+
+def _template_payload(
+    spec: dict[str, Any],
+    *,
+    image_name: str,
+    registry_auth_id: str | None,
+) -> dict[str, Any]:
+    resolved_env = _resolve_env_values(spec.get("env", {}))
+    payload: dict[str, Any] = {
+        "name": spec.get("templateName") or f"{spec['name']}-template",
+        "imageName": image_name,
+        "category": spec.get("category", "NVIDIA"),
+        "containerDiskInGb": int(spec.get("containerDiskInGb", 80)),
+        "env": resolved_env,
+        "isPublic": False,
+        "isServerless": True,
+        "ports": spec.get("ports", ["8080/http"]),
+        "readme": spec.get(
+            "templateReadme",
+            f"Serverless template for {spec['name']}. Built from {spec.get('branch', 'main')}.",
+        ),
+        "volumeInGb": int(spec.get("volumeInGb", 0)),
+        "volumeMountPath": spec.get("volumeMountPath", "/runpod-volume"),
+    }
+    if registry_auth_id:
+        payload["containerRegistryAuthId"] = registry_auth_id
+    if spec.get("dockerStartCmd"):
+        payload["dockerStartCmd"] = _resolve_string_list(spec["dockerStartCmd"], resolved_env)
+    elif spec.get("dockerStartScriptPath"):
+        payload["dockerStartCmd"] = [
+            "bash",
+            "-lc",
+            _resolve_placeholders(
+                _load_start_script(spec["dockerStartScriptPath"]),
+                resolved_env,
+                strict=False,
+            ),
+        ]
+    if spec.get("dockerEntrypoint"):
+        payload["dockerEntrypoint"] = _resolve_string_list(spec["dockerEntrypoint"], resolved_env)
+    return payload
+
+
+def _upsert_template(
+    *,
+    token: str,
+    payload: dict[str, Any],
+) -> str:
+    templates = _request("GET", "/templates", token=token)
+    for template in templates:
+        if template.get("name") == payload["name"]:
+            update_payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"category", "isPublic", "isServerless"}
+            }
+            updated = _request(
+                "POST",
+                f"/templates/{template['id']}/update",
+                token=token,
+                payload=update_payload,
+            )
+            return updated["id"]
+
+    created = _request("POST", "/templates", token=token, expected=(200, 201), payload=payload)
+    return created["id"]
+
+
+def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
+    endpoint_type = spec.get("endpointType", "").strip().upper()
+    if endpoint_type == "LOAD_BALANCER":
+        payload: dict[str, Any] = {
+            "name": spec["name"],
+            "templateId": template_id,
+            "gpuCount": int(spec.get("gpuCount", 1)),
+            "workersMin": int(spec.get("workersMin", 0)),
+            "workersMax": int(spec.get("workersMax", 1)),
+            "idleTimeout": int(spec.get("idleTimeout", 600)),
+            "scalerType": spec.get("scalerType", "REQUEST_COUNT"),
+            "scalerValue": int(spec.get("scalerValue", 1)),
+            "type": "LB",
+            "modelName": str(spec.get("modelName") or ""),
+            "locations": spec.get("dataCenterIds"),
+            "networkVolumeId": spec.get("networkVolumeId"),
+            "flashBootType": GraphQLEnum("FLASHBOOT") if bool(spec.get("flashboot", True)) else GraphQLEnum("NONE"),
+        }
+        if spec.get("gpuIds"):
+            payload["gpuIds"] = str(spec["gpuIds"])
+        if spec.get("gpuTypeIds"):
+            payload["__gpuTypeIds"] = list(spec["gpuTypeIds"])
+        return payload
+
+    payload = {
+        "name": spec["name"],
+        "templateId": template_id,
+        "computeType": spec.get("computeType", "GPU"),
+        "gpuTypeIds": spec["gpuTypeIds"],
+        "gpuCount": int(spec.get("gpuCount", 1)),
+        "dataCenterIds": spec.get("dataCenterIds", []),
+        "workersMin": int(spec.get("workersMin", 0)),
+        "workersMax": int(spec.get("workersMax", 1)),
+        "idleTimeout": int(spec.get("idleTimeout", 600)),
+        "executionTimeoutMs": int(spec.get("executionTimeoutMs", 330000)),
+        "scalerType": spec.get("scalerType", "QUEUE_DELAY"),
+        "scalerValue": int(spec.get("scalerValue", 4)),
+    }
+    if endpoint_type:
+        payload["endpointType"] = endpoint_type
+    if spec.get("allowedCudaVersions"):
+        payload["allowedCudaVersions"] = spec["allowedCudaVersions"]
+    if spec.get("minCudaVersion"):
+        payload["minCudaVersion"] = spec["minCudaVersion"]
+    if spec.get("networkVolumeId"):
+        payload["networkVolumeId"] = spec["networkVolumeId"]
+    if spec.get("networkVolumeIds"):
+        payload["networkVolumeIds"] = spec["networkVolumeIds"]
+    return payload
+
+
+def _graphql_value(value: Any) -> str:
+    if isinstance(value, GraphQLEnum):
+        return str(value)
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_graphql_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        items = ", ".join(f"{key}: {_graphql_value(item)}" for key, item in value.items())
+        return "{ " + items + " }"
+    raise TypeError(f"unsupported GraphQL value: {type(value)!r}")
+
+
+def _lb_locations_value(value: Any) -> Any:
+    if isinstance(value, list):
+        if not value:
+            return None
+        if len(value) == 1:
+            return value[0]
+    return value
+
+
+def _lb_endpoint_id(token: str, endpoint_name: str) -> str | None:
+    data = _graphql_request(token, "query { myself { endpoints { id name } } }")
+    for endpoint in (data.get("myself") or {}).get("endpoints") or []:
+        if endpoint.get("name") == endpoint_name:
+            return str(endpoint["id"])
+    return None
+
+
+def _save_lb_endpoint(
+    *,
+    token: str,
+    payload: dict[str, Any],
+    endpoint_id: str | None = None,
+) -> dict[str, Any]:
+    mutation_payload = {
+        "name": payload["name"],
+        "templateId": payload["templateId"],
+        "gpuIds": payload.get("gpuIds"),
+        "gpuCount": payload["gpuCount"],
+        "workersMin": payload["workersMin"],
+        "workersMax": payload["workersMax"],
+        "idleTimeout": payload["idleTimeout"],
+        "scalerType": payload["scalerType"],
+        "scalerValue": payload["scalerValue"],
+        "type": payload["type"],
+        "modelName": payload.get("modelName") or None,
+        "locations": _lb_locations_value(payload.get("locations")),
+        "networkVolumeId": payload.get("networkVolumeId"),
+        "flashBootType": payload.get("flashBootType"),
+    }
+    if endpoint_id:
+        mutation_payload["id"] = endpoint_id
+    items = ", ".join(
+        f"{key}: {_graphql_value(value)}"
+        for key, value in mutation_payload.items()
+        if value is not None
+    )
+    query = (
+        "mutation { saveEndpoint(input: { "
+        + items
+        + " }) { id templateId name gpuIds } }"
+    )
+    data = _graphql_request(token, query)
+    return data["saveEndpoint"]
+
+
+def _patch_lb_endpoint(*, token: str, endpoint_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _save_lb_endpoint(
+        token=token,
+        payload=payload,
+        endpoint_id=endpoint_id,
+    )
+
+
+def _upsert_endpoint(
+    *,
+    token: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if payload.get("type") == "LB":
+        endpoint_id = _lb_endpoint_id(token, payload["name"])
+        if endpoint_id:
+            return _patch_lb_endpoint(
+                token=token,
+                endpoint_id=endpoint_id,
+                payload=payload,
+            )
+        return _save_lb_endpoint(token=token, payload=payload)
+
+    endpoints = _request("GET", "/endpoints", token=token)
+    for endpoint in endpoints:
+        if endpoint.get("name") == payload["name"]:
+            return _request(
+                "PATCH",
+                f"/endpoints/{endpoint['id']}",
+                token=token,
+                payload=payload,
+            )
+    return _request("POST", "/endpoints", token=token, expected=(200, 201), payload=payload)
+
+
+def _probe_headers(token: str) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    lamp_bearer = str(os.environ.get("VALS_BEARER_TOKEN") or "").strip()
+    if lamp_bearer:
+        headers["X-Lamp-Bearer"] = lamp_bearer
+    return headers
+
+
+def _probe_ready(url: str, *, token: str, timeout_seconds: int) -> tuple[int, str]:
+    deadline = time.time() + timeout_seconds
+    last_status = 0
+    last_body = ""
+    while time.time() < deadline:
+        try:
+            response = requests.get(
+                f"{url.rstrip('/')}/ping",
+                headers=_probe_headers(token),
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            last_body = str(exc)
+            print(f"[probe] /ping request retrying after transport error: {last_body}", flush=True)
+            time.sleep(5)
+            continue
+        last_status = response.status_code
+        last_body = response.text[:500]
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                return response.status_code, last_body
+            if payload.get("ready") is False:
+                print("[probe] /ping returned ready=false; waiting for runtime", flush=True)
+                time.sleep(5)
+                continue
+            return response.status_code, last_body
+        print(f"[probe] /ping returned {response.status_code}; waiting", flush=True)
+        time.sleep(5)
+    raise RunpodApiError(
+        f"GET /ping did not become healthy within {timeout_seconds}s; last status={last_status} body={last_body!r}"
+    )
+
+
+def _reconcile_lb_workers(
+    *,
+    token: str,
+    endpoint_id: str,
+    image_name: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    stopped_workers: set[str] = set()
+    while time.time() < deadline:
+        details = _endpoint_details(token=token, endpoint_id=endpoint_id)
+        endpoint_version = int(details.get("version") or 0)
+        workers = [worker for worker in details.get("workers") or [] if isinstance(worker, dict)]
+        stale_workers = [
+            worker
+            for worker in workers
+            if str(worker.get("imageName") or "").strip() != image_name
+            or int(worker.get("slsVersion") or 0) < endpoint_version
+        ]
+        ready_workers = [
+            worker
+            for worker in workers
+            if str(worker.get("imageName") or "").strip() == image_name
+            and int(worker.get("slsVersion") or 0) >= endpoint_version
+        ]
+
+        if ready_workers and not stale_workers:
+            return details
+
+        for worker in stale_workers:
+            worker_id = str(worker.get("id") or "").strip()
+            if not worker_id or worker_id in stopped_workers:
+                continue
+            print(
+                "[rollout] stopping stale worker "
+                f"{worker_id} image={worker.get('imageName')} slsVersion={worker.get('slsVersion')} "
+                f"endpointVersion={endpoint_version}",
+                flush=True,
+            )
+            _stop_worker(token=token, worker_id=worker_id)
+            stopped_workers.add(worker_id)
+
+        if not workers:
+            print("[rollout] waiting for workers to appear", flush=True)
+        elif not ready_workers:
+            print("[rollout] waiting for a worker on the desired image to become ready", flush=True)
+        else:
+            print("[rollout] waiting for stale workers to drain", flush=True)
+        time.sleep(5)
+
+    raise RunpodApiError(
+        f"endpoint {endpoint_id} did not converge to image {image_name!r} within {timeout_seconds}s"
+    )
+
+
+def main() -> int:
+    _load_local_env()
+    args = _parse_args()
+    token = os.environ.get("RUNPOD_API_KEY")
+    if not token:
+        raise SystemExit("RUNPOD_API_KEY must be set")
+
+    spec = _load_json(args.spec)
+    image_name = _resolve_placeholders(args.image or spec.get("registryImage") or "")
+    if not image_name:
+        raise SystemExit("No registry image provided. Set spec.registryImage or pass --image.")
+
+    registry_auth_id: str | None = None
+    public_registry = args.public_registry or bool(spec.get("publicRegistry"))
+    if not public_registry:
+        auth_name = args.registry_auth_name or spec.get("registryAuthName", "")
+        username = args.registry_username or spec.get("registryUsername", "")
+        password_env = args.registry_password_env or spec.get("registryPasswordEnv", "")
+        if auth_name:
+            if not username:
+                raise SystemExit("registry username is required when using private registry auth")
+            if not password_env:
+                raise SystemExit("registry password env name is required when using private registry auth")
+            password = os.environ.get(password_env)
+            if not password:
+                raise SystemExit(f"registry password env var is not set: {password_env}")
+            registry_auth_id = _registry_auth_id(
+                token=token,
+                auth_name=auth_name,
+                username=username,
+                password=password,
+            )
+
+    template_id = _upsert_template(
+        token=token,
+        payload=_template_payload(spec, image_name=image_name, registry_auth_id=registry_auth_id),
+    )
+    endpoint = _upsert_endpoint(
+        token=token,
+        payload=_endpoint_payload(spec, template_id),
+    )
+    endpoint_url = f"https://{endpoint['id']}.api.runpod.ai"
+    health_status, _ = _probe_ready(endpoint_url, token=token, timeout_seconds=900)
+    if str(spec.get("endpointType", "")).strip().upper() == "LOAD_BALANCER":
+        _reconcile_lb_workers(
+            token=token,
+            endpoint_id=str(endpoint["id"]),
+            image_name=image_name,
+            timeout_seconds=900,
+        )
+        health_status, _ = _probe_ready(endpoint_url, token=token, timeout_seconds=900)
+    result = {
+        "templateId": template_id,
+        "endpointId": endpoint["id"],
+        "endpointName": endpoint["name"],
+        "imageName": image_name,
+        "endpointUrl": endpoint_url,
+        "healthStatus": health_status,
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

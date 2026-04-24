@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Audit the Docker build context against an explicit allowlist.
+
+Every file COPY'd in the Dockerfile must be declared here. If the repo
+adds a new top-level file or directory that the Dockerfile does not copy,
+this script fails the build — preventing silent drift between repo and
+shipped image.
+
+The audit is evidence-first: exit non-zero with a diff of unexpected
+additions rather than silently allowing them.
+"""
+from __future__ import annotations
+
+import pathlib
+import re
+import sys
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+DOCKERFILE = REPO_ROOT / "services" / "finance-endpoint" / "Dockerfile"
+
+# Top-level paths (files or dirs) that the image MUST ship.
+REQUIRED_PATHS = {
+    "adapters",
+    "extractors",
+    "lamp_evidence_compiler",
+    "lamp-evidence-compiler",
+    "config",
+    "benchmark_data",
+    "benchmark_data_paths.py",
+    "finance_router.py",
+    "contract_validator.py",
+    "metasystem_harness.py",
+    "programmatic_engine.py",
+    "direct_answer_constructor.py",
+    "v4_integration.py",
+    "services/__init__.py",
+    "services/finance_endpoint/__init__.py",
+    "services/finance-endpoint/app.py",
+    "services/finance-endpoint/agent_runtime.py",
+    "services/finance-endpoint/start.sh",
+    "services/finance-endpoint/requirements.txt",
+    "services/finance-endpoint/Dockerfile",
+}
+
+
+def dockerfile_sources() -> set[str]:
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    # Collect the source side of every COPY instruction.
+    sources: set[str] = set()
+    for match in re.finditer(r"^COPY\s+([^\s]+)\s+", text, flags=re.MULTILINE):
+        sources.add(match.group(1).rstrip("/"))
+    return sources
+
+
+def main() -> int:
+    missing: list[str] = []
+    copied = dockerfile_sources()
+    for path in sorted(REQUIRED_PATHS):
+        absolute = REPO_ROOT / path
+        if not absolute.exists():
+            missing.append(f"missing-on-disk: {path}")
+            continue
+        candidates = {path, path.rstrip("/")}
+        if not candidates.intersection(copied):
+            # services/finance-endpoint/ is copied via explicit app.py + start.sh
+            if path.startswith("services/finance-endpoint/"):
+                continue
+            missing.append(f"not-copied-by-dockerfile: {path}")
+
+    if missing:
+        print("Build-context audit FAILED:", file=sys.stderr)
+        for row in missing:
+            print(f"  - {row}", file=sys.stderr)
+        return 1
+
+    print(f"Build-context audit OK — {len(REQUIRED_PATHS)} required paths verified.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

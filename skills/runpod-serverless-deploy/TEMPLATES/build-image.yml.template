@@ -1,0 +1,170 @@
+name: Build Serverless Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'adapters/**'
+      - 'extractors/**'
+      - 'lamp_evidence_compiler/**'
+      - 'config/**'
+      - 'benchmark_data/**'
+      - 'services/finance-endpoint/**'
+      - 'services/__init__.py'
+      - 'services/finance_endpoint/**'
+      - 'benchmark_data_paths.py'
+      - 'finance_router.py'
+      - 'contract_validator.py'
+      - 'metasystem_harness.py'
+      - 'programmatic_engine.py'
+      - 'direct_answer_constructor.py'
+      - 'v4_integration.py'
+      - '.github/workflows/build-image.yml'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable GHCR tag. Must start with immutable-. Leave blank to auto-generate.
+        required: false
+        type: string
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.tag.outputs.image_ref }}
+      image_digest: ${{ steps.push.outputs.digest }}
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Reclaim runner disk
+        run: |
+          df -h
+          sudo rm -rf \
+            /usr/share/dotnet /opt/ghc /usr/lib/jvm /usr/share/swift \
+            /usr/local/lib/android /opt/hostedtoolcache /opt/microsoft \
+            /usr/local/.ghcup /usr/local/share/chromium \
+            /usr/local/share/powershell /usr/local/lib/node_modules \
+            /usr/local/share/boost /usr/share/miniconda /opt/pipx \
+            /opt/google /opt/az || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean || true
+          docker system prune -af --volumes || true
+          docker buildx prune -af || true
+          df -h
+
+      - name: Enforce trusted build ref
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "Production images may only be published from main. Current ref: ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+      - name: Generate immutable tag
+        id: tag
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          requested_tag="${{ github.event.inputs.image_tag }}"
+          if [[ -n "$requested_tag" ]]; then
+            tag="$requested_tag"
+          else
+            stamp="$(date -u +%Y%m%d-%H%M%S)"
+            tag="immutable-${stamp}-${short_sha}"
+          fi
+          if [[ ! "$tag" =~ ^immutable-[A-Za-z0-9._-]+$ ]]; then
+            echo "image_tag must start with immutable- and use only [A-Za-z0-9._-]" >&2
+            exit 1
+          fi
+          image_ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lamp1:${tag}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Use GHCR_PAT (classic PAT with write:packages) because the default
+        # GITHUB_TOKEN cannot create user-scoped packages.
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: james47kjv
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Refuse to overwrite existing immutable tag
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "${{ steps.tag.outputs.image_ref }}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing immutable tag: ${{ steps.tag.outputs.image_ref }}" >&2
+            exit 1
+          fi
+
+      - name: Build-context audit
+        shell: bash
+        run: |
+          python3 scripts/ci/audit_build_context.py
+
+      - name: Build and push immutable image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/finance-endpoint/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tag.outputs.image_ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=serverless-image
+          cache-to: type=gha,mode=max,scope=serverless-image
+          provenance: false
+          sbom: false
+
+      - name: Write release manifest
+        shell: bash
+        run: |
+          mkdir -p release
+          cat > release/manifest.json <<EOF
+          {
+            "image_ref": "${{ steps.tag.outputs.image_ref }}",
+            "image_tag": "${{ steps.tag.outputs.tag }}",
+            "image_digest": "${{ steps.push.outputs.digest }}",
+            "commit_sha": "${GITHUB_SHA}",
+            "commit_ref": "${GITHUB_REF}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "workflow_run_id": "${{ github.run_id }}",
+            "workflow_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+          cat release/manifest.json
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ steps.tag.outputs.tag }}
+          path: release/manifest.json
+          if-no-files-found: error
+
+      - name: Publish build summary
+        shell: bash
+        run: |
+          {
+            echo "## Built immutable image"
+            echo
+            echo "- ref: \`${{ steps.tag.outputs.image_ref }}\`"
+            echo "- digest: \`${{ steps.push.outputs.digest }}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
