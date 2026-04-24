@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Drift audit: compare a live endpoint's deployed image to a release manifest.
+
+Fails loud if:
+    1. The live template's registryImage does not match the expected tag.
+    2. The resolved digest of the live image does not match the manifest digest.
+    3. Either piece of evidence cannot be retrieved.
+
+Usage:
+    python scripts/serverless/audit_digest.py \\
+        --endpoint-id <id> \\
+        --manifest release/manifest.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+import requests
+
+API_BASE = "https://rest.runpod.io/v1"
+
+
+def _load_env() -> None:
+    for candidate in (pathlib.Path.home() / ".env", pathlib.Path.cwd() / ".env"):
+        if not candidate.exists():
+            continue
+        for raw in candidate.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip()
+
+
+def _get_endpoint(endpoint_id: str, token: str) -> dict:
+    r = requests.get(
+        f"{API_BASE}/endpoints/{endpoint_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _get_template(template_id: str, token: str) -> dict:
+    r = requests.get(
+        f"{API_BASE}/templates/{template_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _resolve_image_digest(image_ref: str) -> str:
+    out = subprocess.check_output(
+        ["docker", "buildx", "imagetools", "inspect", image_ref, "--format", "{{.Manifest.Digest}}"],
+        text=True,
+    ).strip()
+    if not out.startswith("sha256:"):
+        raise RuntimeError(f"Unexpected digest output: {out}")
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--endpoint-id", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--skip-digest", action="store_true",
+                        help="Skip digest verification if docker is not available")
+    args = parser.parse_args()
+
+    _load_env()
+    token = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if not token:
+        raise SystemExit("RUNPOD_API_KEY not set")
+
+    manifest = json.loads(pathlib.Path(args.manifest).read_text(encoding="utf-8"))
+    expected_image = manifest["image_ref"]
+    expected_digest = manifest["image_digest"]
+
+    endpoint = _get_endpoint(args.endpoint_id, token)
+    template_id = endpoint.get("templateId")
+    if not template_id:
+        raise SystemExit(f"Endpoint {args.endpoint_id} has no templateId")
+    template = _get_template(template_id, token)
+    live_image = (template.get("imageName") or "").strip()
+
+    failures: list[str] = []
+    if live_image != expected_image:
+        failures.append(f"image_ref drift: live={live_image!r} expected={expected_image!r}")
+
+    if not args.skip_digest:
+        try:
+            live_digest = _resolve_image_digest(live_image)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            failures.append(f"could not resolve live digest: {exc}")
+            live_digest = None
+        if live_digest and live_digest != expected_digest:
+            failures.append(f"digest drift: live={live_digest} expected={expected_digest}")
+
+    report = {
+        "endpoint_id": args.endpoint_id,
+        "template_id": template_id,
+        "live_image": live_image,
+        "expected_image": expected_image,
+        "expected_digest": expected_digest,
+        "failures": failures,
+    }
+    print(json.dumps(report, indent=2))
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

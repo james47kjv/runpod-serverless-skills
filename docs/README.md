@@ -24,7 +24,7 @@ skills/                # 3 skills (deploy, debug, red-team)
   runpod-serverless-deploy/
     SKILL.md           # main checklist
     REFERENCES/        # full canonical docs (2544 lines)
-    TEMPLATES/         # 12 reusable starter files
+    TEMPLATES/         # 13 reusable starter files
   runpod-serverless-debug/
     SKILL.md           # worker-won't-start triage
   runpod-red-team/
@@ -33,7 +33,6 @@ agents/                # 3 specialized sub-agents
 commands/              # 5 slash commands (Claude-only)
 hooks/                 # 1 hook (post-deploy audit)
 .codex/                # Codex bootstrap shim
-.opencode/             # OpenCode bootstrap (placeholder)
 docs/                  # this directory
 ```
 

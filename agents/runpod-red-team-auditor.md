@@ -1,8 +1,7 @@
 ---
 name: runpod-red-team-auditor
-description: Independent red-team auditor for a deployed RunPod Serverless endpoint. Runs adversarial attacks (out-of-scope, identity probes, prompt injection, anti-cheating gate bypass, debug-trace auth matrix), grades the public-50 and synthetic-50 canaries, and produces a RED_TEAM_FINDINGS report. Use when the deploy needs an independent check before an external evaluator runs it.
-model: sonnet
-color: red
+description: Use when auditing a deployed RunPod Serverless endpoint for leaks, scope violations, prompt injection, anti-cheating gate bypasses, or when running the public-50 + synthetic-50 canary scoring before an external evaluator does.
+model: inherit
 ---
 
 # RunPod Red Team Auditor Sub-Agent
@@ -38,11 +37,11 @@ external evaluator won't.
 
 On spawn, read in order:
 
-1. `~/.claude/plugins/local/runpod-serverless/skills/runpod-red-team/SKILL.md`
+1. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-red-team/SKILL.md`
    — red-team playbook.
-2. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/red-team-handover.md`
+2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/red-team-handover.md`
    — the full 633-line handover.
-3. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/anti-cheating-contract.md`
+3. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/anti-cheating-contract.md`
    — the integrity contract you're checking.
 
 ## Attack coverage

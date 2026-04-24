@@ -41,8 +41,10 @@ the checklist, then execute:
   explicitly run staging first in this session.
 - Refuse if the image tag does not match
   `^immutable-[0-9]{8}-[0-9]{6}-[a-f0-9]{7}$`.
-- Never deploy with `LAMP_OFFLINE_FIXTURES` or
-  `LAMP_DETERMINISTIC_OVERRIDES` set in the spec — flag as CRITICAL.
+- Never deploy with the anti-cheating integrity flags (your
+  `<APP>_OFFLINE_FIXTURES` and `<APP>_DETERMINISTIC_OVERRIDES`
+  equivalents) set in the spec — flag as CRITICAL. See
+  `skills/runpod-serverless-deploy/REFERENCES/anti-cheating-contract.md`.
 
 ## On completion
 

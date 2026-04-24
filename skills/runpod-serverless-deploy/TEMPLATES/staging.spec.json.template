@@ -1,19 +1,25 @@
 {
-  "name": "lamp-finance-v1-staging",
+  "__template_notes": [
+    "Replace placeholders: <APP>, <GHCR_OWNER>, <HF_REPO>, <HF_REVISION>, <APP_REQUIRED_KEY>.",
+    "The <APP>_* env vars follow a per-project prefix convention. Rename everything to match your app's prefix.",
+    "DO NOT add the two anti-cheating integrity flags (your <APP>_OFFLINE_FIXTURES and <APP>_DETERMINISTIC_OVERRIDES equivalents) to env — the contract requires them UNSET in staging/production.",
+    "Staging and production specs MUST differ only in workersMin/workersMax/name/env.<APP>_ENVIRONMENT. Everything else identical."
+  ],
+  "name": "<APP>-staging",
   "endpointType": "LOAD_BALANCER",
   "registryImage": "${DEPLOY_REGISTRY_IMAGE}",
   "publicRegistry": false,
-  "registryAuthName": "ghcr-lamp1",
-  "registryUsername": "james47kjv",
+  "registryAuthName": "ghcr-<APP>",
+  "registryUsername": "<GHCR_OWNER>",
   "registryPasswordEnv": "GHCR_PAT",
-  "templateName": "lamp-finance-v1-staging-template",
+  "templateName": "<APP>-staging-template",
   "containerDiskInGb": 80,
   "ports": [
     "8080/http"
   ],
   "dockerStartCmd": [
     "bash",
-    "/app/services/finance-endpoint/start.sh"
+    "/app/services/<APP>/start.sh"
   ],
   "gpuIds": "BLACKWELL_96,BLACKWELL_180,HOPPER_141",
   "gpuTypeIds": [
@@ -24,7 +30,7 @@
     "NVIDIA H200 NVL",
     "NVIDIA H100 NVL"
   ],
-  "modelName": "james47kjv/lamp1-model",
+  "modelName": "<HF_REPO>",
   "gpuCount": 1,
   "dataCenterIds": [
     "US"
@@ -41,18 +47,16 @@
     "12.8"
   ],
   "env": {
-    "LAMP_HF_MODEL_REPO": "james47kjv/lamp1-model",
-    "LAMP_HF_MODEL_REVISION": "842f7e2d0134576d585238eaa2d204bb6c214fdc",
+    "<APP>_HF_MODEL_REPO": "<HF_REPO>",
+    "<APP>_HF_MODEL_REVISION": "<HF_REVISION>",
     "HF_TOKEN": "${HF_TOKEN}",
-    "LAMP_WORKSPACE_ROOT": "/tmp/lamp-workspaces",
-    "LAMP_GRAPHITI_WRITES": "0",
-    "LAMP_PROMPT_INJECT_HINTS": "0",
-    "LAMP_DISABLE_MODEL_FALLBACK": "0",
-    "LAMP_USE_AGENT_RUNTIME": "1",
-    "LAMP_MODE": "BENCHMARK_SAFE",
-    "LAMP_ENVIRONMENT": "staging",
+    "<APP>_WORKSPACE_ROOT": "/tmp/<APP>-workspaces",
+    "<APP>_DISABLE_MODEL_FALLBACK": "0",
+    "<APP>_USE_AGENT_RUNTIME": "1",
+    "<APP>_MODE": "BENCHMARK_SAFE",
+    "<APP>_ENVIRONMENT": "staging",
     "PORT": "8080",
     "PORT_HEALTH": "8080",
-    "SEC_EDGAR_API_KEY": "${SEC_EDGAR_API_KEY}"
+    "<APP_REQUIRED_KEY>": "${<APP_REQUIRED_KEY>}"
   }
 }

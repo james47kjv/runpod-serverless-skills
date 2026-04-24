@@ -24,7 +24,7 @@ jobs:
           python -m pip install fastapi uvicorn pydantic sec-api requests tenacity python-dotenv
       - name: Run CPU test suite
         env:
-          LAMP_BASE: ${{ github.workspace }}
+          <APP>_BASE: ${{ github.workspace }}
         run: |
           python -m pytest -q \
             test_metasystem_harness.py \
@@ -46,8 +46,8 @@ jobs:
       - name: Dockerfile lint
         run: |
           docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 --ignore DL3013 --ignore DL4006 - \
-            < services/finance-endpoint/Dockerfile || true
+            < services/<APP>/Dockerfile || true
       - name: Parse staging + production specs
         run: |
-          python3 -c "import json; json.load(open('deploy/runpod/lamp-finance-v1.staging.json'))"
-          python3 -c "import json; json.load(open('deploy/runpod/lamp-finance-v1.production.json'))"
+          python3 -c "import json; json.load(open('deploy/runpod/<APP>.staging.json'))"
+          python3 -c "import json; json.load(open('deploy/runpod/<APP>.production.json'))"

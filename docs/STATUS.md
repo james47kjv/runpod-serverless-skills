@@ -4,15 +4,14 @@
 
 | Check | Result |
 |---|---|
-| Plugin directory scaffold | ✅ 36 files in place |
+| Plugin directory scaffold | ✅ 37 files in place |
 | Main skill v2.0.0 | ✅ 401 lines, CSO-compliant description |
 | References (5 files) | ✅ 3,015 lines total |
 | Templates (12 files) | ✅ All copied + parametrized from LAMP1 |
 | Sub-agents (3 personas) | ✅ Expert smoke-tested against Llama-3.1-8B scenario |
 | Slash commands (5) | ✅ All 5 command docs present |
-| Hook `post-deploy-audit.json` | ✅ Enabled (advisory-only) |
+| Hook `hooks.json` | ✅ Enabled (SessionStart banner + PostToolUse saveEndpoint reminder, advisory-only) |
 | `.codex/INSTALL.md` + bootstrap | ✅ Codex integration live |
-| `.opencode/INSTALL.md` | ✅ Placeholder for OpenCode |
 | v1.0.0 redirect header | ✅ Old skill at `~/.claude/skills/runpod-serverless-deploy/SKILL.md` now points here |
 | GitHub repo | ✅ https://github.com/james47kjv/runpod-serverless-skills (public) |
 | Registered in `installed_plugins.json` | ✅ `runpod-serverless@local` entry |
@@ -42,7 +41,7 @@ memory layer is simply advisory.
 ### Doc-drift monitoring — manual
 
 The plugin's `REFERENCES/` are verbatim copies of the canonical LAMP1
-docs at `C:/Users/innas/finance/docs/`. If the canonical docs evolve,
-this plugin goes stale until someone re-runs the copy. No automated
-drift check is wired today. Add a nightly cron (see `schedule` skill)
-to `diff` them and warn on mismatch.
+docs at `C:/Users/innas/lamp1/docs/` (mirrored to
+`github.com/james47kjv/lamp1/tree/main/docs`). If the canonical docs
+evolve, this plugin goes stale until someone re-runs the copy. No
+automated drift check is wired today.

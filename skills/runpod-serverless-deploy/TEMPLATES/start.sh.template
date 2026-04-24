@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# LAMP Finance — vLLM-based endpoint boot.
+# <APP> — vLLM-based endpoint boot.
 #
 # Contract:
-#   - Required env: LAMP_HF_MODEL_REPO, LAMP_HF_MODEL_REVISION.
+#   - Required env: <APP>_HF_MODEL_REPO, <APP>_HF_MODEL_REVISION.
 #   - Resolves the model path from RunPod's FlashBoot-populated HF cache;
 #     falls back to HF download via HF_TOKEN only if the cache is missing.
 #   - Launches vLLM's OpenAI server on port 30000, FastAPI harness on
@@ -20,14 +20,14 @@ log() {
 
 die() { log ERROR "$1" "$2"; exit 1; }
 
-LAMP_HF_MODEL_REPO="${LAMP_HF_MODEL_REPO:-}"
-LAMP_HF_MODEL_REVISION="${LAMP_HF_MODEL_REVISION:-}"
-[[ -z "${LAMP_HF_MODEL_REPO}" ]] && die missing_model_repo "LAMP_HF_MODEL_REPO must be set by the endpoint spec"
-[[ -z "${LAMP_HF_MODEL_REVISION}" ]] && die missing_model_revision "LAMP_HF_MODEL_REVISION must be set (pin revision)"
+<APP>_HF_MODEL_REPO="${<APP>_HF_MODEL_REPO:-}"
+<APP>_HF_MODEL_REVISION="${<APP>_HF_MODEL_REVISION:-}"
+[[ -z "${<APP>_HF_MODEL_REPO}" ]] && die missing_model_repo "<APP>_HF_MODEL_REPO must be set by the endpoint spec"
+[[ -z "${<APP>_HF_MODEL_REVISION}" ]] && die missing_model_revision "<APP>_HF_MODEL_REVISION must be set (pin revision)"
 
-RUNPOD_HF_CACHE_ROOT="${LAMP_RUNPOD_HF_CACHE_ROOT:-/runpod-volume/huggingface-cache/hub}"
-REPO_CACHE_DIR="models--${LAMP_HF_MODEL_REPO//\//--}"
-SNAPSHOT_PATH="${RUNPOD_HF_CACHE_ROOT}/${REPO_CACHE_DIR}/snapshots/${LAMP_HF_MODEL_REVISION}"
+RUNPOD_HF_CACHE_ROOT="${<APP>_RUNPOD_HF_CACHE_ROOT:-/runpod-volume/huggingface-cache/hub}"
+REPO_CACHE_DIR="models--${<APP>_HF_MODEL_REPO//\//--}"
+SNAPSHOT_PATH="${RUNPOD_HF_CACHE_ROOT}/${REPO_CACHE_DIR}/snapshots/${<APP>_HF_MODEL_REVISION}"
 
 if [[ -d "${SNAPSHOT_PATH}" ]]; then
     log INFO model_cache_hit "FlashBoot cache hit at ${SNAPSHOT_PATH}"
@@ -36,19 +36,19 @@ else
     log WARN model_cache_miss "FlashBoot cache miss at ${SNAPSHOT_PATH}; attempting HF download"
     [[ -z "${HF_TOKEN:-}" ]] && die model_unavailable "FlashBoot cache missing AND HF_TOKEN unset; cannot self-heal"
     MODEL_PATH="$(
-        LAMP_HF_MODEL_REPO="${LAMP_HF_MODEL_REPO}" \
-        LAMP_HF_MODEL_REVISION="${LAMP_HF_MODEL_REVISION}" \
-        LAMP_HF_CACHE_DIR="${LAMP_HF_CACHE_DIR:-${RUNPOD_HF_CACHE_ROOT%/hub}}" \
+        <APP>_HF_MODEL_REPO="${<APP>_HF_MODEL_REPO}" \
+        <APP>_HF_MODEL_REVISION="${<APP>_HF_MODEL_REVISION}" \
+        <APP>_HF_CACHE_DIR="${<APP>_HF_CACHE_DIR:-${RUNPOD_HF_CACHE_ROOT%/hub}}" \
         python3 - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 
 kwargs = {
-    "repo_id": os.environ["LAMP_HF_MODEL_REPO"],
-    "revision": os.environ["LAMP_HF_MODEL_REVISION"],
+    "repo_id": os.environ["<APP>_HF_MODEL_REPO"],
+    "revision": os.environ["<APP>_HF_MODEL_REVISION"],
     "token": os.environ.get("HF_TOKEN") or None,
 }
-cache = os.environ.get("LAMP_HF_CACHE_DIR")
+cache = os.environ.get("<APP>_HF_CACHE_DIR")
 if cache:
     kwargs["cache_dir"] = cache
 print(snapshot_download(local_files_only=False, **kwargs))
@@ -58,22 +58,22 @@ PY
     log INFO model_downloaded "Model resolved to ${MODEL_PATH}"
 fi
 
-export LAMP_MODEL_PATH="${MODEL_PATH}"
+export <APP>_MODEL_PATH="${MODEL_PATH}"
 
-VLLM_PORT="${LAMP_VLLM_PORT:-30000}"
-API_PORT="${PORT:-${LAMP_API_PORT:-8080}}"
-READY_FILE="${LAMP_READY_FILE:-/tmp/lamp-finance.ready}"
+VLLM_PORT="${<APP>_VLLM_PORT:-30000}"
+API_PORT="${PORT:-${<APP>_API_PORT:-8080}}"
+READY_FILE="${<APP>_READY_FILE:-/tmp/<APP>.ready}"
 rm -f "${READY_FILE}"
-export LAMP_READY_FILE="${READY_FILE}"
-export LAMP_WORKSPACE_ROOT="${LAMP_WORKSPACE_ROOT:-/tmp/lamp-workspaces}"
-mkdir -p "${LAMP_WORKSPACE_ROOT}"
+export <APP>_READY_FILE="${READY_FILE}"
+export <APP>_WORKSPACE_ROOT="${<APP>_WORKSPACE_ROOT:-/tmp/lamp-workspaces}"
+mkdir -p "${<APP>_WORKSPACE_ROOT}"
 
 # vLLM OpenAI server runs on :30000. FastAPI harness talks to it.
-export LAMP_MODEL_BASE_URL="${LAMP_MODEL_BASE_URL:-http://127.0.0.1:${VLLM_PORT}/v1}"
-export LAMP_PUBLIC_MODEL_NAME="${LAMP_PUBLIC_MODEL_NAME:-Lamp Account/lamp-finance-v1}"
+export <APP>_MODEL_BASE_URL="${<APP>_MODEL_BASE_URL:-http://127.0.0.1:${VLLM_PORT}/v1}"
+export <APP>_PUBLIC_MODEL_NAME="${<APP>_PUBLIC_MODEL_NAME:-<GHCR_OWNER>/<APP>}"
 
 # vLLM-served model name (internal, what vLLM exposes on its /v1/models).
-VLLM_SERVED_NAME="${LAMP_VLLM_SERVED_NAME:-lamp-finance-v1}"
+VLLM_SERVED_NAME="${<APP>_VLLM_SERVED_NAME:-<APP>}"
 
 cleanup() {
     if [[ -n "${API_PID:-}" ]] && kill -0 "${API_PID}" 2>/dev/null; then
@@ -99,7 +99,7 @@ API_PID=$!
 #   --max-model-len 32768: Vals questions fit comfortably in 32k; full 262k
 #     context blows up KV memory and is unnecessary.
 #   --trust-remote-code: for Qwen3.5 custom modeling.
-#   LAMP_VLLM_EXTRA_ARGS: escape hatch for per-deploy tuning.
+#   <APP>_VLLM_EXTRA_ARGS: escape hatch for per-deploy tuning.
 log INFO launching_vllm "vLLM on :${VLLM_PORT} serving ${MODEL_PATH}"
 python3 -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_PATH}" \
@@ -110,7 +110,7 @@ python3 -m vllm.entrypoints.openai.api_server \
     --reasoning-parser qwen3 \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.85 \
-    ${LAMP_VLLM_EXTRA_ARGS:-} \
+    ${<APP>_VLLM_EXTRA_ARGS:-} \
     > /tmp/vllm.log 2>&1 &
 VLLM_PID=$!
 

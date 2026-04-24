@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Audit the Docker build context against an explicit allowlist.
 
+TEMPLATE — parametrize before use:
+  - Replace `<APP>` with your service name (matches the services/<APP>/ path).
+  - Populate REQUIRED_PATHS with every top-level file or directory the image
+    must ship. Every entry becomes a CI gate: if it doesn't show up in a
+    Dockerfile COPY instruction, the build fails.
+  - Add one entry per new Python module you add to services/<APP>/ —
+    this is the exact regression that caused the 22-minute boot loop on
+    the LAMP1 2026-04-23 deploy (pitfall 6).
+
 Every file COPY'd in the Dockerfile must be declared here. If the repo
 adds a new top-level file or directory that the Dockerfile does not copy,
 this script fails the build — preventing silent drift between repo and
@@ -16,30 +25,27 @@ import re
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-DOCKERFILE = REPO_ROOT / "services" / "finance-endpoint" / "Dockerfile"
+DOCKERFILE = REPO_ROOT / "services" / "<APP>" / "Dockerfile"
 
 # Top-level paths (files or dirs) that the image MUST ship.
+# Edit per-service: list EVERY directory and top-level .py file your app needs
+# at runtime, plus every file under services/<APP>/ that is referenced at
+# runtime. Missing an entry = pitfall 6 regression.
 REQUIRED_PATHS = {
-    "adapters",
-    "extractors",
-    "lamp_evidence_compiler",
-    "lamp-evidence-compiler",
-    "config",
-    "benchmark_data",
-    "benchmark_data_paths.py",
-    "finance_router.py",
-    "contract_validator.py",
-    "metasystem_harness.py",
-    "programmatic_engine.py",
-    "direct_answer_constructor.py",
-    "v4_integration.py",
+    # --- your app's Python modules (adjust for your layout) ---
+    # "adapters",
+    # "evidence_compiler",
+    # "your_router.py",
+    # "your_harness.py",
+    # --- service entry points (keep these, adjusted for <APP>) ---
     "services/__init__.py",
-    "services/finance_endpoint/__init__.py",
-    "services/finance-endpoint/app.py",
-    "services/finance-endpoint/agent_runtime.py",
-    "services/finance-endpoint/start.sh",
-    "services/finance-endpoint/requirements.txt",
-    "services/finance-endpoint/Dockerfile",
+    "services/<APP>_shim/__init__.py",     # optional import shim if you use one
+    "services/<APP>/app.py",
+    "services/<APP>/start.sh",
+    "services/<APP>/requirements.txt",
+    "services/<APP>/Dockerfile",
+    # --- any agent-runtime / verifier / candidate modules added later ---
+    # "services/<APP>/agent_runtime.py",
 }
 
 
@@ -62,8 +68,9 @@ def main() -> int:
             continue
         candidates = {path, path.rstrip("/")}
         if not candidates.intersection(copied):
-            # services/finance-endpoint/ is copied via explicit app.py + start.sh
-            if path.startswith("services/finance-endpoint/"):
+            # Files under services/<APP>/ are typically copied individually
+            # (app.py, start.sh) rather than as a whole directory.
+            if path.startswith("services/<APP>/"):
                 continue
             missing.append(f"not-copied-by-dockerfile: {path}")
 
@@ -73,7 +80,7 @@ def main() -> int:
             print(f"  - {row}", file=sys.stderr)
         return 1
 
-    print(f"Build-context audit OK — {len(REQUIRED_PATHS)} required paths verified.")
+    print(f"Build-context audit OK - {len(REQUIRED_PATHS)} required paths verified.")
     return 0
 
 

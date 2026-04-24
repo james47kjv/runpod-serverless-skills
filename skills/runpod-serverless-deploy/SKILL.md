@@ -57,12 +57,14 @@ Every deploy using this skill MUST satisfy ALL of these. No exceptions.
 6. **No silent failures in `start.sh`.** Every boot stage emits
    structured JSON.
 7. **`GHCR_PAT`, not `GITHUB_TOKEN`,** for GHCR login in CI.
-8. **Integrity gates OFF in production.** `LAMP_OFFLINE_FIXTURES` and
-   `LAMP_DETERMINISTIC_OVERRIDES` must be unset in any serverless
-   deploy spec. Boot-time `_assert_runtime_integrity()` enforces.
+8. **Integrity gates OFF in production.** The anti-cheating flags
+   (your `<APP>_OFFLINE_FIXTURES` and `<APP>_DETERMINISTIC_OVERRIDES`
+   equivalents) must be unset in any serverless deploy spec. Boot-time
+   `_assert_runtime_integrity()` enforces. LAMP1's specific names shown
+   here are the LAMP1 canon; rename for your app.
 9. **App-layer auth on debug routes.** `Authorization` is consumed by
-   the RunPod gateway; use `X-Lamp-Debug-Token` for app-layer
-   defense-in-depth.
+   the RunPod gateway; use a custom header (e.g.,
+   `X-<APP>-Debug-Token`) for the app-layer defense-in-depth check.
 
 If the user asks you to skip any of these, push back. These are the
 lessons from the 22 pitfalls catalogued in `REFERENCES/pitfalls-22.md`.
@@ -138,7 +140,7 @@ RunPod UI's "Edit Endpoint" for live supply per pool.
 
 ## Templates
 
-`TEMPLATES/` ships 12 starter files. Copy into your repo and
+`TEMPLATES/` ships 13 starter files. Copy into your repo and
 parametrize `<APP>`, `<OWNER>`, `<HF_REPO>`, `<HF_REVISION>`:
 
 | Template | Target path | What it is |
@@ -229,15 +231,18 @@ answer on a benchmark-matching question. See
 `REFERENCES/anti-cheating-contract.md` for the full contract. The
 short form:
 
-1. **`LAMP_OFFLINE_FIXTURES`** — unset in prod. When unset, precompiled
-   caches + synthetic-evidence fallbacks are unreachable.
-2. **`LAMP_DETERMINISTIC_OVERRIDES`** — unset in prod. When unset, the
-   canned-answer `_qNNN` handlers cannot fire.
-3. **`_resolve_q_num`** — returns `None` unconditionally in prod.
-   Severs benchmark coupling regardless of question-text match.
+1. **`<APP>_OFFLINE_FIXTURES`** — unset in prod. When unset, precompiled
+   caches + synthetic-evidence fallbacks are unreachable. (LAMP1's
+   name: `LAMP_OFFLINE_FIXTURES`.)
+2. **`<APP>_DETERMINISTIC_OVERRIDES`** — unset in prod. When unset,
+   canned-answer `_qNNN`-style handlers cannot fire. (LAMP1's name:
+   `LAMP_DETERMINISTIC_OVERRIDES`.)
+3. **`_resolve_q_num` equivalent** — returns `None` unconditionally in
+   prod. Severs benchmark coupling regardless of question-text match.
 4. **Boot-time assertion** — refuses to start staging/prod containers
-   if `SEC_EDGAR_API_KEY` is unset OR if either gate is enabled.
-5. **CI lock** — `tests/test_integrity_gating.py` keeps the defaults.
+   if the required data-access key is unset OR if either gate is enabled.
+5. **CI lock** — a test (e.g., `tests/test_integrity_gating.py`) keeps
+   the defaults from drifting back to on.
 
 If a question scores poorly on the benchmark, the fix is NEVER to
 re-enable a fixture gate or add a new `_qNNN` handler. Fix evidence
@@ -245,14 +250,15 @@ coverage or candidate quality instead.
 
 ---
 
-## Debug-trace route + X-Lamp-Debug-Token
+## Debug-trace route + custom auth header
 
 If your deploy has a `/v1/debug/trace/{workspace_id}` route (to inspect
 the candidate bank + verifier results + arbiter decision of a specific
 request), it MUST use defense-in-depth auth:
 
 - **Gateway layer** (RunPod LB): `Authorization: Bearer <RUNPOD_API_KEY>`
-- **App layer** (your FastAPI): `X-Lamp-Debug-Token: <LAMP_DEBUG_TOKEN | RUNPOD_ENDPOINT_SECRET>`
+- **App layer** (your FastAPI): a CUSTOM header, e.g.,
+  `X-<APP>-Debug-Token: <<APP>_DEBUG_TOKEN | RUNPOD_ENDPOINT_SECRET>`
 
 The gateway CONSUMES the `Authorization` header and does NOT forward it
 raw; using `Authorization` for the app-layer check leaves the route

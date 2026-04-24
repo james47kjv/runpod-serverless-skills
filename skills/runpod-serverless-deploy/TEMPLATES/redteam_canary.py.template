@@ -41,7 +41,7 @@ def _load_questions(limit: int, questions_file: pathlib.Path | None = None) -> l
 def _ask(base_url: str, api_key: str, question: str, timeout: float) -> dict[str, Any]:
     started = time.time()
     payload = {
-        "model": "Lamp Account/lamp-finance-v1",
+        "model": "<GHCR_OWNER>/<APP>",
         "messages": [{"role": "user", "content": question}],
         "temperature": 0.0,
         "max_tokens": 2048,

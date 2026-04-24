@@ -1,4 +1,4 @@
-# LAMP Finance — vLLM-based serverless runtime.
+# <APP> — vLLM-based serverless runtime.
 #
 # Contract:
 #   - Base is vLLM's official OpenAI-server image (0.19.1, CUDA 13, Ubuntu 24.04).
@@ -21,11 +21,11 @@ ENTRYPOINT []
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    LAMP_MODE=BENCHMARK_SAFE \
-    LAMP_PROMPT_INJECT_HINTS=0 \
-    LAMP_GRAPHITI_READS=1 \
-    LAMP_GRAPHITI_WRITES=0 \
-    LAMP_BASE=/app
+    <APP>_MODE=BENCHMARK_SAFE \
+    <APP>_PROMPT_INJECT_HINTS=0 \
+    <APP>_GRAPHITI_READS=1 \
+    <APP>_GRAPHITI_WRITES=0 \
+    <APP>_BASE=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git && rm -rf /var/lib/apt/lists/*
@@ -34,7 +34,7 @@ WORKDIR /app
 
 # Application deps on top of vLLM runtime. vLLM's base image already has
 # fastapi / uvicorn / pydantic / requests. We just add our specifics.
-COPY services/finance-endpoint/requirements.txt /tmp/requirements.txt
+COPY services/<APP>/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir \
     "sec-api>=1.0.30" \
     "tenacity>=9.0" \
@@ -44,8 +44,8 @@ RUN pip install --no-cache-dir \
 # --- Harness payload -------------------------------------------------------
 COPY adapters/               /app/adapters/
 COPY extractors/             /app/extractors/
-COPY lamp_evidence_compiler/ /app/lamp_evidence_compiler/
-COPY lamp-evidence-compiler/ /app/lamp-evidence-compiler/
+COPY <evidence_package>/ /app/<evidence_package>/
+COPY <evidence-package>/ /app/<evidence-package>/
 COPY config/                 /app/config/
 COPY benchmark_data/         /app/benchmark_data/
 COPY benchmark_data_paths.py       /app/
@@ -57,10 +57,10 @@ COPY direct_answer_constructor.py  /app/
 COPY v4_integration.py             /app/
 COPY services/__init__.py                   /app/services/__init__.py
 COPY services/finance_endpoint/__init__.py  /app/services/finance_endpoint/__init__.py
-COPY services/finance-endpoint/app.py            /app/services/finance-endpoint/app.py
-COPY services/finance-endpoint/agent_runtime.py  /app/services/finance-endpoint/agent_runtime.py
-COPY services/finance-endpoint/start.sh          /app/services/finance-endpoint/start.sh
-RUN chmod +x /app/services/finance-endpoint/start.sh
+COPY services/<APP>/app.py            /app/services/<APP>/app.py
+COPY services/<APP>/agent_runtime.py  /app/services/<APP>/agent_runtime.py
+COPY services/<APP>/start.sh          /app/services/<APP>/start.sh
+RUN chmod +x /app/services/<APP>/start.sh
 
 # Build-context audit artifact
 RUN python3 -c "import hashlib, json, pathlib; \
@@ -71,4 +71,4 @@ entries = []; \
 open('/app/BUILD_MANIFEST.json', 'w').write(json.dumps({'entries': entries}, indent=2))"
 
 EXPOSE 8080
-CMD ["bash", "/app/services/finance-endpoint/start.sh"]
+CMD ["bash", "/app/services/<APP>/start.sh"]

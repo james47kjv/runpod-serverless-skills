@@ -25,7 +25,7 @@ export SEC_EDGAR_API_KEY="${SEC_EDGAR_API_KEY:-$(extract SEC_EDGAR_API_KEY)}"
 
 [[ -z "$RUNPOD_API_KEY" ]] && { echo "RUNPOD_API_KEY unset" >&2; exit 1; }
 
-endpoint_id="pluwnqk2codj00"
+endpoint_id="<STAGING_ENDPOINT_ID>"
 
 tstamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(tstamp)] [auto-deploy] $*" >&2; }
@@ -35,7 +35,7 @@ throttle() {
     curl -sS "https://api.runpod.io/graphql" \
         -H "Authorization: Bearer $RUNPOD_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"query\":\"mutation { saveEndpoint(input: { id: \\\"$endpoint_id\\\", name: \\\"lamp-finance-v1-staging\\\", templateId: \\\"etq1ryzcgg\\\", gpuIds: \\\"BLACKWELL_96,BLACKWELL_180,HOPPER_141\\\", gpuCount: 1, workersMin: $min, workersMax: $max, idleTimeout: 300, scalerType: \\\"REQUEST_COUNT\\\", scalerValue: 1, type: \\\"LB\\\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }\"}" \
+        -d "{\"query\":\"mutation { saveEndpoint(input: { id: \\\"$endpoint_id\\\", name: \\\"<APP>-staging\\\", templateId: \\\"<STAGING_TEMPLATE_ID>\\\", gpuIds: \\\"BLACKWELL_96,BLACKWELL_180,HOPPER_141\\\", gpuCount: 1, workersMin: $min, workersMax: $max, idleTimeout: 300, scalerType: \\\"REQUEST_COUNT\\\", scalerValue: 1, type: \\\"LB\\\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }\"}" \
         2>&1 | py -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d) if 'errors' not in d else d)"
 }
 
@@ -43,10 +43,10 @@ throttle() {
 #    skip its probe by terminating early once we see the endpoint update succeed.
 log "Updating template + endpoint to image $IMAGE"
 py scripts/serverless/deploy_endpoint.py \
-    --spec deploy/runpod/lamp-finance-v1.staging.json \
+    --spec deploy/runpod/<APP>.staging.json \
     --image "$IMAGE" \
-    --registry-auth-name ghcr-lamp1 \
-    --registry-username james47kjv \
+    --registry-auth-name ghcr-<APP> \
+    --registry-username <GHCR_OWNER> \
     --registry-password-env GHCR_PAT > /tmp/deploy.log 2>&1 &
 DEPLOY_PID=$!
 

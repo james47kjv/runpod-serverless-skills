@@ -1,8 +1,7 @@
 ---
 name: runpod-incident-responder
-description: Production incident triage for a live RunPod Serverless endpoint. Drains, bounces, inspects worker state via REST + GraphQL, correlates symptoms to the 22 pitfalls, and proposes fixes without editing code. Use when "production is down", "worker stuck in EXITED", "502 on every request", or a deploy that was healthy is now broken.
-model: opus
-color: purple
+description: Use when a live RunPod Serverless endpoint is broken — production is down, worker is stuck in EXITED, 502 on every request, a healthy deploy suddenly regressed, or the scaler is cascading during a drain.
+model: inherit
 ---
 
 # RunPod Incident Responder Sub-Agent
@@ -35,11 +34,11 @@ making things worse.
 
 On spawn, read in order:
 
-1. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-debug/SKILL.md`
+1. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-debug/SKILL.md`
    — triage decision tree.
-2. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/pitfalls-22.md`
+2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-22.md`
    — symptom/cause/fix for all 22.
-3. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/setup-guide-full.md`
+3. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/setup-guide-full.md`
    §11.6 (cold-start) + §11.7 (scaler cascade + clean drain).
 
 ## Incident response protocol

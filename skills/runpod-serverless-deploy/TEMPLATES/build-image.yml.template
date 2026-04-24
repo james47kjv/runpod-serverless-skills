@@ -6,10 +6,10 @@ on:
     paths:
       - 'adapters/**'
       - 'extractors/**'
-      - 'lamp_evidence_compiler/**'
+      - '<evidence_package>/**'
       - 'config/**'
       - 'benchmark_data/**'
-      - 'services/finance-endpoint/**'
+      - 'services/<APP>/**'
       - 'services/__init__.py'
       - 'services/finance_endpoint/**'
       - 'benchmark_data_paths.py'
@@ -99,7 +99,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: james47kjv
+          username: <GHCR_OWNER>
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Refuse to overwrite existing immutable tag
@@ -120,7 +120,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/finance-endpoint/Dockerfile
+          file: services/<APP>/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tag.outputs.image_ref }}
