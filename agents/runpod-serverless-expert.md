@@ -46,7 +46,8 @@ On spawn, read these in order:
 4. `~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/pitfalls-22.md`
    — the pitfalls catalog.
 
-Reference the harness architecture (`REFERENCES/harness-guidebook.md`)
+Reference the harness architecture at
+`~/.claude/plugins/local/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/harness-guidebook.md`
 only when the task involves the propose-review-judge runtime.
 
 ## When to use this sub-agent
