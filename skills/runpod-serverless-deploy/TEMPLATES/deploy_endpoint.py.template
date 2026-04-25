@@ -595,6 +595,123 @@ def _reject_region_pinning(spec: dict[str, Any]) -> None:
         )
 
 
+def _require_port_health(spec: dict[str, Any]) -> None:
+    """Refuse to push a LOAD_BALANCER spec without PORT_HEALTH in env.
+
+    RunPod's LB health-poller looks at PORT_HEALTH (NOT PORT) to find /ping.
+    If PORT_HEALTH is unset, the worker boots cleanly, FastAPI serves /ping
+    correctly, but the gateway never sees it and the endpoint stays
+    `unhealthy` forever with no error in any log. This is the silent killer
+    documented in pitfalls-34.md #25 and setup-guide §6.1.2.
+    """
+    if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
+        return
+    env = spec.get("env") or {}
+    if not env.get("PORT_HEALTH"):
+        raise SystemExit(
+            "spec env is missing PORT_HEALTH — RunPod's LB poller uses "
+            "PORT_HEALTH (NOT PORT) for /ping. Without it the worker will "
+            "appear healthy in container logs but be invisible to the "
+            "gateway, and the endpoint will stay `unhealthy` forever with "
+            "no error in any log. Set PORT_HEALTH in env (same value as PORT "
+            "for the standard single-port case). See pitfalls-34.md #25 and "
+            "setup-guide §6.1.2."
+        )
+
+
+def _require_docker_start_cmd(spec: dict[str, Any]) -> None:
+    """Refuse to push any spec without dockerStartCmd.
+
+    RunPod IGNORES the Dockerfile's CMD when the base image already declares
+    its own (TEI, TGI, vLLM, NIM, Whisper, faster-whisper, etc. all ship
+    one). Without dockerStartCmd, the base image's binary runs in place of
+    your start.sh, dies with no args in milliseconds, and the worker exits
+    code 1 with an EMPTY Container logs panel. Symptom is identical to a
+    corrupt image but the cause is a missing two-line spec field. See
+    pitfalls-34.md #26 and setup-guide §6.1.3.
+    """
+    cmd = spec.get("dockerStartCmd")
+    if not isinstance(cmd, list) or not cmd:
+        raise SystemExit(
+            "spec is missing dockerStartCmd — RunPod will fall back to the "
+            "base image's CMD if you don't set this, and on TEI / TGI / "
+            "vLLM / NIM / Whisper / faster-whisper bases that means your "
+            "start.sh never runs and the worker exits code 1 with an empty "
+            "Container logs panel. Set dockerStartCmd to "
+            '["bash", "/app/start.sh"] (path must match where Dockerfile '
+            "copies start.sh). See pitfalls-34.md #26 and setup-guide §6.1.3."
+        )
+
+
+_FORBIDDEN_HF_CACHE_PATTERNS_BASH = (
+    # Bash `:=` is a NO-OP when the var is already set (TEI/TGI/vLLM/NIM
+    # bases preset HUGGINGFACE_HUB_CACHE=/data and HF_HOME=/data in image
+    # ENV). See pitfalls-34.md #31 and setup-guide §6.1.8.
+    re.compile(r':\s*"\$\{HUGGINGFACE_HUB_CACHE\s*:='),
+    re.compile(r':\s*"\$\{HF_HOME\s*:='),
+)
+_FORBIDDEN_HF_CACHE_PATTERNS_PY = (
+    # Python `os.environ.setdefault(...)` is a NO-OP when the env var is
+    # already set. Same root cause as the bash `:=` pattern above.
+    re.compile(r'os\.environ\.setdefault\(\s*"HUGGINGFACE_HUB_CACHE"'),
+    re.compile(r'os\.environ\.setdefault\(\s*"HF_HOME"'),
+    re.compile(r"os\.environ\.setdefault\(\s*'HUGGINGFACE_HUB_CACHE'"),
+    re.compile(r"os\.environ\.setdefault\(\s*'HF_HOME'"),
+)
+
+
+def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
+    """Refuse to push if start.sh / boot.py uses `:=` or `setdefault` for HF cache vars.
+
+    TEI/TGI/vLLM/NIM/Whisper bases all preset HUGGINGFACE_HUB_CACHE=/data
+    in image ENV. Bash `:=` and Python `setdefault` are NO-OPS when the
+    var is already set, so conditional assignment is silently skipped —
+    runtime detection logs `location=runpod-host` but `printenv` shows
+    `/data`, model loader hangs forever on ENOENT with no error in any
+    log. See pitfalls-34.md #31 and setup-guide §6.1.8.
+
+    Scans the spec's parent directory and adjacent service-folder for
+    start.sh and boot.py files.
+    """
+    spec_dir = spec_path.parent.resolve()
+    candidates: list[Path] = []
+    for d in (spec_dir, spec_dir.parent, *spec_dir.parent.glob("*/")):
+        for fname in ("start.sh", "boot.py"):
+            p = d / fname
+            if p.is_file():
+                candidates.append(p)
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        patterns = (
+            _FORBIDDEN_HF_CACHE_PATTERNS_BASH
+            if path.suffix == ".sh"
+            else _FORBIDDEN_HF_CACHE_PATTERNS_PY
+        )
+        for pat in patterns:
+            if pat.search(text):
+                raise SystemExit(
+                    f"{path} uses conditional assignment (`:=` / "
+                    "`setdefault`) for HUGGINGFACE_HUB_CACHE or HF_HOME. "
+                    "TEI/TGI/vLLM/NIM bases preset these in image ENV, so "
+                    "conditional assignment is a NO-OP — your runtime "
+                    "detection runs but `printenv` inside the container "
+                    "still shows the base-image preset (e.g. /data). The "
+                    "model loader hangs forever on ENOENT with no error "
+                    "in any log. Use UNCONDITIONAL assignment: "
+                    'HUGGINGFACE_HUB_CACHE=\"...\" in bash, '
+                    'os.environ[\"HUGGINGFACE_HUB_CACHE\"] = \"...\" in '
+                    "Python. See pitfalls-34.md #31 and setup-guide "
+                    "§6.1.8."
+                )
+
+
 def main() -> int:
     _load_local_env()
     args = _parse_args()
@@ -604,6 +721,9 @@ def main() -> int:
 
     spec = _load_json(args.spec)
     _reject_region_pinning(spec)
+    _require_port_health(spec)
+    _require_docker_start_cmd(spec)
+    _reject_conditional_hf_cache_assignment(Path(args.spec))
     image_name = _resolve_placeholders(args.image or spec.get("registryImage") or "")
     if not image_name:
         raise SystemExit("No registry image provided. Set spec.registryImage or pass --image.")

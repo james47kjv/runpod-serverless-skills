@@ -10,6 +10,74 @@
 #   - No silent failures: every boot stage emits structured JSON; every
 #     process exit (including status=0) is treated as a boot failure.
 
+# CRITICAL ORDERING: emit start_sh_entered BEFORE `set -euo pipefail`.
+# This is the canary echo that proves start.sh actually ran. If the script
+# aborts on any subsequent line, this echo has already flushed to stdout
+# and is visible in Container logs — telling you "the script ran but failed
+# at line N", not "the script never ran". If you ever see "exit code 1"
+# without this line in Container logs, the failure is upstream of start.sh:
+# almost always a Dockerfile `ENTRYPOINT []` hijack (pitfall #27, fix:
+# explicit `ENTRYPOINT ["bash", "/app/start.sh"]`) or a missing
+# `dockerStartCmd` in the spec (pitfall #26).
+# `whoami`/`uid` fields tell you the runtime user — TEI/TGI/some NVIDIA
+# bases run as non-root, which makes /root/.cache/* mkdirs fail silently.
+echo '{"event":"start_sh_entered","ts":"'"$(date -u +%FT%TZ)"'","whoami":"'"$(id -un 2>/dev/null || echo unknown)"'","uid":"'"$(id -u 2>/dev/null || echo unknown)"'"}'
+
+# Anchor HF cache at /tmp (always world-writable). TEI/TGI and several
+# inference base images run as a non-root user; mkdir -p /root/.cache/...
+# fails with `Permission denied`, and under `set -e` the script aborts
+# silently (echoes after the failed mkdir never run). FlashBoot keeps the
+# warm copy on the HOST regardless of in-container path, so anchoring at
+# /tmp doesn't lose the cache benefit.
+# IMPORTANT — two-tier HF cache pattern (LAMP1 plugin reference, proven working).
+# READ from RunPod's host-cached models when present (FlashBoot win path).
+# /runpod-volume/huggingface-cache/hub is host-local, populated by spec.modelName
+# — NOT a user-attached Network Volume; does NOT pin region. Anchoring the
+# cache at /tmp instead defeats FlashBoot — every scale-from-zero re-downloads
+# the model (3-5 min for 7-8 GB). Spec env MUST NOT hard-code HF_HOME or
+# HUGGINGFACE_HUB_CACHE — let this runtime detection decide.
+# See pitfall #30 / setup-guide section 6.1.7.
+#
+# CRITICAL — use UNCONDITIONAL assignment (NOT bash `:=`).
+# TEI/TGI/vLLM/NIM/Whisper base images all preset HUGGINGFACE_HUB_CACHE=/data
+# (and similar for HF_HOME) in the image's ENV layer. Bash `:=` is a NO-OP
+# when the var is already set to a non-empty value, so `: "${X:=y}"` would
+# silently leave the base-image's `/data` in place — the model loader then
+# reads from /data (which doesn't exist on serverless), gets ENOENT, and
+# hangs forever on "Loading model" with no error. The diagnostic LIES:
+# the hf_cache_resolved log says `runpod-host` but `printenv` inside the
+# container shows `/data`. Always assign unconditionally.
+# See pitfall #31 / setup-guide section 6.1.8.
+RUNPOD_HUB_CACHE="/runpod-volume/huggingface-cache/hub"
+if [[ -d "$RUNPOD_HUB_CACHE" ]] && touch "$RUNPOD_HUB_CACHE/.write-probe" 2>/dev/null && rm -f "$RUNPOD_HUB_CACHE/.write-probe" 2>/dev/null; then
+    HUGGINGFACE_HUB_CACHE="$RUNPOD_HUB_CACHE"
+    CACHE_LOCATION="runpod-host"
+elif [[ -d "$RUNPOD_HUB_CACHE" ]]; then
+    HUGGINGFACE_HUB_CACHE="/tmp/<APP>-hf-cache"
+    CACHE_LOCATION="runpod-host-readonly-fallback-to-tmp"
+else
+    HUGGINGFACE_HUB_CACHE="/tmp/<APP>-hf-cache"
+    CACHE_LOCATION="tmp-fallback"
+fi
+# WRITE — keep HF_HOME on /tmp so any tokens/non-cache state is always writable.
+# Unconditional assignment (NOT `:=`) for the same reason as HUGGINGFACE_HUB_CACHE.
+HF_HOME="/tmp/<APP>-hf-home"
+mkdir -p /tmp/<APP>-hf-cache /tmp/<APP>-hf-home || {
+    echo '{"event":"tmp_mkdir_failed","whoami":"'"$(id -un 2>/dev/null)"'"}' >&2
+    exit 1
+}
+mkdir -p "$HUGGINGFACE_HUB_CACHE" 2>/dev/null || true
+export HUGGINGFACE_HUB_CACHE HF_HOME
+echo '{"event":"hf_cache_resolved","location":"'"$CACHE_LOCATION"'","hub_cache":"'"$HUGGINGFACE_HUB_CACHE"'","hf_home":"'"$HF_HOME"'"}'
+
+# Newer huggingface_hub honors HF_TOKEN, but older TEI/TGI builds look
+# exclusively at HUGGING_FACE_HUB_TOKEN for private-repo auth. Mirror
+# the value if only one is set so private models always download.
+export HUGGING_FACE_HUB_TOKEN="${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}"
+export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
+
+# set -e enabled AFTER the canary echoes so any failure from this point
+# flushes its own diagnostic before the script aborts.
 set -euo pipefail
 
 log() {
@@ -62,6 +130,17 @@ export <APP>_MODEL_PATH="${MODEL_PATH}"
 
 VLLM_PORT="${<APP>_VLLM_PORT:-30000}"
 API_PORT="${PORT:-${<APP>_API_PORT:-8080}}"
+# RunPod's LB health-poller looks at $PORT_HEALTH (NOT $PORT) to find /ping.
+# Bind FastAPI's /ping route to this port. If unset, fall back to API_PORT and
+# emit a structured WARNING — the deploy-side guard (deploy_endpoint.py
+# _require_port_health) is the primary defense, this log line is the
+# diagnostic-of-last-resort. See pitfalls-34.md #25 / setup-guide §6.1.2.
+HEALTH_PORT="${PORT_HEALTH:-}"
+if [[ -z "${HEALTH_PORT}" ]]; then
+    log WARN port_health_unset "PORT_HEALTH is unset — RunPod's LB poller will not find /ping; falling back to ${API_PORT} so the in-container app still works"
+    HEALTH_PORT="${API_PORT}"
+fi
+export HEALTH_PORT
 READY_FILE="${<APP>_READY_FILE:-/tmp/<APP>.ready}"
 rm -f "${READY_FILE}"
 export <APP>_READY_FILE="${READY_FILE}"

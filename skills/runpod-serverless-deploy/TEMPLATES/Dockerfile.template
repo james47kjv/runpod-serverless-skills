@@ -14,9 +14,15 @@
 
 FROM vllm/vllm-openai:v0.19.1-cu130-ubuntu2404
 
-# vLLM's image sets ENTRYPOINT to its OpenAI server. We override with our
-# start.sh which launches both the app (FastAPI harness) and vLLM.
-ENTRYPOINT []
+# CRITICAL: vLLM's image (and TEI/TGI/NIM/Whisper bases) sets ENTRYPOINT to
+# its model-server. The OCI spec says `ENTRYPOINT []` clears the inherited
+# entrypoint, but RunPod's container runtime does NOT honor that reliably —
+# it preserves the inherited ENTRYPOINT and passes our CMD/dockerStartCmd as
+# args, causing `vllm-server bash /app/services/<APP>/start.sh` to run, dying
+# in milliseconds with "exit code 1" and ZERO Container logs because start.sh
+# never ran. Explicit ENTRYPOINT is the only robust pattern across runtimes.
+# See pitfalls-34.md #27 and setup-guide §6.1.4 for the full breakdown.
+ENTRYPOINT ["bash", "/app/services/<APP>/start.sh"]
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -71,4 +77,8 @@ entries = []; \
 open('/app/BUILD_MANIFEST.json', 'w').write(json.dumps({'entries': entries}, indent=2))"
 
 EXPOSE 8080
-CMD ["bash", "/app/services/<APP>/start.sh"]
+# CMD intentionally empty — ENTRYPOINT handles invocation, and the spec's
+# `dockerStartCmd: ["bash", "/app/services/<APP>/start.sh"]` is the second
+# (defense-in-depth) layer. Setting CMD to the script too would be redundant
+# and could confuse runtimes that interpret CMD as entrypoint args.
+CMD []

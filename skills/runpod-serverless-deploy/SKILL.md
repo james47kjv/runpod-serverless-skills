@@ -65,9 +65,62 @@ Every deploy using this skill MUST satisfy ALL of these. No exceptions.
 9. **App-layer auth on debug routes.** `Authorization` is consumed by
    the RunPod gateway; use a custom header (e.g.,
    `X-<APP>-Debug-Token`) for the app-layer defense-in-depth check.
+10. **`PORT_HEALTH` MUST be set in env on every LOAD_BALANCER spec.**
+    RunPod's LB poller looks at `PORT_HEALTH` (NOT `PORT`) to find
+    `/ping`. Missing it is the silent killer: the worker boots
+    cleanly, FastAPI serves `/ping` 204/200 internally, the endpoint
+    stays `unhealthy` forever, external `/ping` times out, and there
+    is **no error in any log** because nothing is broken. Set
+    `PORT_HEALTH` to the same value as `PORT` for the standard
+    single-port case. The deploy script must refuse any spec without
+    it. See pitfall #25 / setup-guide §6.1.2.
+11. **No region pinning.** No `dataCenterIds`, `locations`,
+    `dataCenterPriority`, `region`, `regionId`, `zoneId`, or
+    `countryCodes` on a serverless endpoint. Endpoints MUST be
+    GLOBAL. The deploy script's `_reject_region_pinning()` must
+    refuse any spec that pins a region. See pitfall #23 /
+    setup-guide §6.1.1.
+12. **`dockerStartCmd` MUST be set on every spec.** Format:
+    `["bash", "/app/start.sh"]` (path must match where Dockerfile
+    copies start.sh). RunPod IGNORES the Dockerfile's `CMD` when
+    the base image declares its own — and most modern inference
+    base images do (TEI, TGI, vLLM, NIM, Whisper, faster-whisper,
+    etc.). Without `dockerStartCmd`, the base image's binary runs
+    instead of your `start.sh`, dies in milliseconds with no args,
+    and the worker exits with code 1 and an EMPTY Container logs
+    panel — looks identical to a corrupt image. The deploy script
+    must refuse any spec without it. See pitfall #26 / setup-guide
+    §6.1.3.
+13. **Dockerfile MUST set an explicit `ENTRYPOINT`, NOT `[]`.**
+    Format: `ENTRYPOINT ["bash", "/app/start.sh"]` and `CMD []`.
+    The empty-array `ENTRYPOINT []` is supposed to clear the
+    inherited entrypoint per the OCI spec, but RunPod's container
+    runtime does not honor it reliably — it falls back to the base
+    image's ENTRYPOINT (a non-trivial setup script on TEI/TGI/vLLM
+    bases that ends in `exec model-server "$@"`) and passes your
+    `dockerStartCmd` as args. Result: model-server runs with
+    "bash /app/start.sh" as the model ID, dies in milliseconds,
+    worker exits code 1 with empty Container logs — even though
+    `dockerStartCmd` is set correctly. Defense in depth: explicit
+    Dockerfile ENTRYPOINT + spec `dockerStartCmd` both pointing at
+    the same script means either one catches what the other misses.
+    See pitfall #27 / setup-guide §6.1.4.
+
+14. **HF cache MUST read from `/runpod-volume/huggingface-cache/hub`
+    when present** (RunPod's host-disk cache, populated by
+    `spec.modelName`). Two-tier pattern: read on `/runpod-volume`,
+    write on `/tmp`. Anchoring at `/tmp` defeats FlashBoot — every
+    scale-from-zero re-downloads the model (3-5 min for 7-8 GB
+    models). `/runpod-volume` here is NOT a user-attached Network
+    Volume; it's host-local and does NOT pin region. Spec env MUST
+    NOT hard-code `HF_HOME` or `HUGGINGFACE_HUB_CACHE` — let
+    runtime detection in start.sh / boot.py decide. Diagnostic:
+    emit `hf_cache_resolved` event showing whether `location` is
+    `runpod-host` or `tmp-fallback`. See pitfall #30 / setup-guide
+    section 6.1.7.
 
 If the user asks you to skip any of these, push back. These are the
-lessons from the 24 pitfalls catalogued in `REFERENCES/pitfalls-24.md`.
+lessons from the 34 pitfalls catalogued in `REFERENCES/pitfalls-34.md`.
 
 See `REFERENCES/anti-cheating-contract.md` for the full #8 contract.
 
@@ -327,7 +380,7 @@ sub-agent. Quick triage:
 6. **Actions run fails in 3 s with billing message** → pitfall 7
    (account billing). Resolve at github.com/settings/billing.
 
-See `REFERENCES/pitfalls-24.md` for all 22.
+See `REFERENCES/pitfalls-34.md` for all 22.
 
 ---
 
@@ -364,7 +417,7 @@ primitives to Codex-native equivalents.
 
 ## Pitfalls — the 22 sorted by historical pain
 
-See `REFERENCES/pitfalls-24.md` for symptom/cause/fix on every pitfall.
+See `REFERENCES/pitfalls-34.md` for symptom/cause/fix on every pitfall.
 Summary:
 
 | # | Category | One-line |
@@ -400,7 +453,7 @@ Summary:
 2. Run `audit_digest.py` against the live endpoint and commit
    `release/drift-audit-<UTC>.json`.
 3. If you added a NEW pitfall to the list (23rd), update
-   `REFERENCES/pitfalls-24.md`, bump the skill version, and update
+   `REFERENCES/pitfalls-34.md`, bump the skill version, and update
    the hook + table above.
 4. If Graphiti memory is wired, write an episode with: image ref,
    endpoint IDs, canary pass rate, cold-start observed, any deviations
