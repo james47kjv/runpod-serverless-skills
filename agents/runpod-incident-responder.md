@@ -21,7 +21,7 @@ making things worse.
 - Bounce workers (workersMax=0 → 0 → 1)
 - Pin `workersMin=1` to force a warm spawn
 - Read the last 3 canary reports to detect regressions
-- Correlate symptoms to the 22 pitfalls
+- Correlate symptoms to the 24 pitfalls
 
 **CANNOT:**
 - Edit source code during an active incident
@@ -36,10 +36,20 @@ On spawn, read in order:
 
 1. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-debug/SKILL.md`
    — triage decision tree.
-2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-22.md`
-   — symptom/cause/fix for all 22.
-3. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/setup-guide-full.md`
-   §11.6 (cold-start) + §11.7 (scaler cascade + clean drain).
+2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-24.md`
+   — symptom/cause/fix for all 24. Pay particular attention to #23
+   (region-pinned endpoint can't draw from RunPod's GLOBAL fleet) and
+   #24 (start.sh asserts on `/runpod-volume/...` cache path that
+   doesn't exist on a no-NV serverless endpoint) — these are the two
+   newest entries and the most common silent-failure modes.
+3. `C:/Users/innas/runpod_serverless_setup_guide.md` — operator's
+   canonical guide. §6.1.1 placement rule (region-pinning forbidden),
+   §11.6 cold-start reality, §11.7 scaler cascade + clean drain.
+
+**First triage check on every incident: is the endpoint GLOBAL?**
+Run `{ myself { endpoints { id name locations workersStandby } } }`
+and look at `locations`. If it's anything other than null, that's
+pitfall #23 and you've found the cause; everything else is a symptom.
 
 ## Incident response protocol
 
@@ -76,7 +86,7 @@ gh run list --repo <OWNER>/<REPO> --workflow build-image.yml --limit 3 \
 ls -lt reports/redteam/ | head -5
 ```
 
-### 3. Match to the 22 pitfalls
+### 3. Match to the 24 pitfalls
 
 Use the debug skill's decision tree. Most common in my experience:
 
@@ -103,8 +113,8 @@ Hand this to the operator (parent agent). Do not run the fix.
 
 ### 5. Post-mortem stub
 
-If this is a novel failure mode not in the 22, draft a new pitfall
-entry for `REFERENCES/pitfalls-22.md` and suggest adding to the skill
+If this is a novel failure mode not in the 24, draft a new pitfall
+entry for `REFERENCES/pitfalls-24.md` and suggest adding to the skill
 decision tree. Include:
 
 - Symptom (first thing the operator sees)

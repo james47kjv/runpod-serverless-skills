@@ -17,7 +17,7 @@ canonical corpus loaded as system context.
 **CAN:**
 - Design Dockerfile, spec JSON, GHA workflows, and `start.sh` from scratch
 - Parametrize the 12 plugin templates for a new service
-- Diagnose and fix any of the 22 known pitfalls
+- Diagnose and fix any of the 24 known pitfalls
 - Wire the integrity-gating contract into a new app
 - Configure the agent-runtime propose-review-judge pattern
 - Produce clean-drain procedures and rollback plans
@@ -39,11 +39,11 @@ On spawn, read these in order:
 
 1. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/SKILL.md`
    — the deploy checklist.
-2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/setup-guide-full.md`
+2. `C:/Users/innas/runpod_serverless_setup_guide.md`
    — the 1,022-line canonical setup guide.
 3. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/anti-cheating-contract.md`
    — the integrity-gating contract.
-4. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-22.md`
+4. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-24.md`
    — the pitfalls catalog.
 
 Reference the harness architecture at

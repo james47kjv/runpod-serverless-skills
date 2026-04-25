@@ -67,7 +67,7 @@ Every deploy using this skill MUST satisfy ALL of these. No exceptions.
    `X-<APP>-Debug-Token`) for the app-layer defense-in-depth check.
 
 If the user asks you to skip any of these, push back. These are the
-lessons from the 22 pitfalls catalogued in `REFERENCES/pitfalls-22.md`.
+lessons from the 24 pitfalls catalogued in `REFERENCES/pitfalls-24.md`.
 
 See `REFERENCES/anti-cheating-contract.md` for the full #8 contract.
 
@@ -185,7 +185,7 @@ CHECKLIST (TodoWrite-ready):
       drain: `workersMax=0` on both endpoints. This is the ONLY
       deterministic off-state (see pitfall 19).
 
-For the full deploy walkthrough see `REFERENCES/setup-guide-full.md §8`.
+For the full deploy walkthrough see `C:/Users/innas/runpod_serverless_setup_guide.md §8`.
 
 ---
 
@@ -267,7 +267,7 @@ through the gateway unmodified.
 
 Implementation: `hmac.compare_digest` for constant-time compare. When
 no secret is configured, return 503 (closed), NOT 200. See
-`REFERENCES/setup-guide-full.md §11.8` for the full code.
+`C:/Users/innas/runpod_serverless_setup_guide.md §11.8` for the full code.
 
 ---
 
@@ -327,7 +327,7 @@ sub-agent. Quick triage:
 6. **Actions run fails in 3 s with billing message** → pitfall 7
    (account billing). Resolve at github.com/settings/billing.
 
-See `REFERENCES/pitfalls-22.md` for all 22.
+See `REFERENCES/pitfalls-24.md` for all 22.
 
 ---
 
@@ -364,7 +364,7 @@ primitives to Codex-native equivalents.
 
 ## Pitfalls — the 22 sorted by historical pain
 
-See `REFERENCES/pitfalls-22.md` for symptom/cause/fix on every pitfall.
+See `REFERENCES/pitfalls-24.md` for symptom/cause/fix on every pitfall.
 Summary:
 
 | # | Category | One-line |
@@ -400,7 +400,7 @@ Summary:
 2. Run `audit_digest.py` against the live endpoint and commit
    `release/drift-audit-<UTC>.json`.
 3. If you added a NEW pitfall to the list (23rd), update
-   `REFERENCES/pitfalls-22.md`, bump the skill version, and update
+   `REFERENCES/pitfalls-24.md`, bump the skill version, and update
    the hook + table above.
 4. If Graphiti memory is wired, write an episode with: image ref,
    endpoint IDs, canary pass rate, cold-start observed, any deviations

@@ -198,3 +198,51 @@ historical pain level. Every one of these lost us hours; skip none.
 - **Fix:** `_resolve_q_num` returns `None` unconditionally unless
   `LAMP_OFFLINE_FIXTURES` or `LAMP_DETERMINISTIC_OVERRIDES` is set.
   Severs coupling at the root. See anti-cheating-contract.md.
+
+### 23. Region-pinned endpoint can't draw from RunPod's GLOBAL fleet
+- **Symptom:** Endpoint sits at `workersStandby=1, workers=0` with
+  `/ping` timing out indefinitely; UI eventually marks newly-spawned
+  workers `throttled`. GraphQL `myself { endpoints { locations } }`
+  returns a single region (`"US"`, `"EU-RO-1"`, etc.) instead of `null`.
+- **Cause:** Spec contains `dataCenterIds` / `locations` /
+  `dataCenterPriority` / `region` / `regionId` / `zoneId` /
+  `countryCodes`. The RunPod scheduler can only see GPUs in that
+  region. With pool fallthrough (`gpuIds` left→right) the search
+  exhausts inside the region and stops — RunPod won't reach across
+  regions to find a 4090 even when one is sitting idle in another DC.
+- **Fix:** **Endpoints must be GLOBAL.** Remove all region keys from
+  the spec. The deploy script must serialize `locations: null` (or
+  omit the field) on the saveEndpoint payload. CI must run an audit
+  that fails the build if any spec contains those keys (see
+  `scripts/ci/audit_no_region_pinning.py`). The deployer itself
+  should `_reject_region_pinning` at runtime as defense-in-depth.
+  Region-pinning is for POD endpoints with a regional network volume —
+  never for serverless GPU endpoints. See setup-guide §6.1.1.
+
+### 24. start.sh asserts on `/runpod-volume/...` cache path that doesn't exist on serverless
+- **Symptom:** Worker boots, RUNNING for a few seconds, then EXITED
+  with exit code 1. RunPod Console "Container" logs panel is
+  completely empty; "System" tab only says `worker exited with exit
+  code 1`. Pattern repeats on every retry. Eventually RunPod throttles.
+- **Cause:** `start.sh` has `[ -d /runpod-volume/huggingface-cache/...
+  ] || exit 1` as a precondition check. On serverless endpoints
+  WITHOUT a network volume attached (which is the standard pattern —
+  network volumes pin a region, see pitfall #23), `/runpod-volume`
+  doesn't exist as a writable path. Under `set -euo pipefail` the
+  check fails before any `echo` flushes, so logs are empty.
+- **Fix:**
+  1. Anchor the HF cache inside the writable container disk:
+     `export HF_HOME=/root/.cache/huggingface
+      export HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
+      mkdir -p "$HUGGINGFACE_HUB_CACHE"`
+  2. Let the inference runtime (TEI / vLLM / transformers) own its
+     own cache; `huggingface_hub.snapshot_download(cache_dir=...)`
+     is idempotent and pulls only what's missing.
+  3. Pipe each child's stdout/stderr to a log file
+     (`uvicorn ... > /tmp/uvicorn.log 2>&1 &`) and on every failure
+     path emit `tail -n 80 /tmp/*.log`. RunPod's Console panel for
+     LB endpoints is unreliable; tee'd logs are your forensic trail.
+  4. Emit an unconditional `start_sh_entered` echo at the very top
+     of `start.sh` so you can prove the script ran at all.
+  5. FlashBoot keeps the first-pull cache warm on the host across
+     scale cycles — you only pay the full download once per host.

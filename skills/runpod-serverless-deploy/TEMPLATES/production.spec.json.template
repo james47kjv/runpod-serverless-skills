@@ -31,9 +31,7 @@
   ],
   "modelName": "<HF_REPO>",
   "gpuCount": 1,
-  "dataCenterIds": [
-    "US"
-  ],
+  "_locations_note": "DO NOT add dataCenterIds / locations / region / etc. Endpoints MUST be GLOBAL — see pitfalls-24.md #23. The deploy script's _reject_region_pinning() will refuse any spec that pins a region.",
   "workersMin": 1,
   "workersMax": 2,
   "idleTimeout": 300,

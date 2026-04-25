@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.sh\""
+            "command": "bash \"C:/Users/innas/.codex/runpod-serverless/hooks/post-tool-use.sh\""
           }
         ]
       }

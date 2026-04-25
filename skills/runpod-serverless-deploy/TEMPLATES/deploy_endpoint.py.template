@@ -322,7 +322,10 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
             "scalerValue": int(spec.get("scalerValue", 1)),
             "type": "LB",
             "modelName": str(spec.get("modelName") or ""),
-            "locations": spec.get("dataCenterIds"),
+            # Pitfall #23: endpoints MUST be GLOBAL. Hard-pin to None — any spec
+            # that tried to set dataCenterIds/locations/region etc. is refused
+            # by _reject_region_pinning() at startup; this is defense-in-depth.
+            "locations": None,
             "networkVolumeId": spec.get("networkVolumeId"),
             "flashBootType": GraphQLEnum("FLASHBOOT") if bool(spec.get("flashboot", True)) else GraphQLEnum("NONE"),
         }
@@ -338,7 +341,8 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
         "computeType": spec.get("computeType", "GPU"),
         "gpuTypeIds": spec["gpuTypeIds"],
         "gpuCount": int(spec.get("gpuCount", 1)),
-        "dataCenterIds": spec.get("dataCenterIds", []),
+        # No region pinning on serverless GPU endpoints. See pitfall #23.
+        "dataCenterIds": [],
         "workersMin": int(spec.get("workersMin", 0)),
         "workersMax": int(spec.get("workersMax", 1)),
         "idleTimeout": int(spec.get("idleTimeout", 600)),
@@ -566,6 +570,31 @@ def _reconcile_lb_workers(
     )
 
 
+# Pitfall #23: serverless endpoints MUST be GLOBAL (no region pinning).
+# Pinning to one datacenter causes the no-workers-available / throttled
+# class of cold-start failures because the scheduler can only see GPUs
+# in that region. This guard refuses any spec carrying region keys.
+_FORBIDDEN_REGION_KEYS = (
+    "dataCenterIds",
+    "dataCenterPriority",
+    "locations",
+    "region",
+    "regionId",
+    "zoneId",
+    "countryCodes",
+)
+
+
+def _reject_region_pinning(spec: dict[str, Any]) -> None:
+    hits = [k for k in _FORBIDDEN_REGION_KEYS if spec.get(k)]
+    if hits:
+        raise SystemExit(
+            "spec pins a region/datacenter (forbidden — endpoints must be GLOBAL "
+            "to draw from RunPod's full fleet); remove these keys: "
+            + ", ".join(hits)
+        )
+
+
 def main() -> int:
     _load_local_env()
     args = _parse_args()
@@ -574,6 +603,7 @@ def main() -> int:
         raise SystemExit("RUNPOD_API_KEY must be set")
 
     spec = _load_json(args.spec)
+    _reject_region_pinning(spec)
     image_name = _resolve_placeholders(args.image or spec.get("registryImage") or "")
     if not image_name:
         raise SystemExit("No registry image provided. Set spec.registryImage or pass --image.")

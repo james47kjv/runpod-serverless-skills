@@ -26,11 +26,11 @@ depth:
 
 | Reference | Size | Contents |
 |---|---|---|
-| `setup-guide-full.md` | 1022 lines | Full LAMP1 serverless setup guide |
+| `runpod_serverless_setup_guide.md` | 1022 lines | Full LAMP1 serverless setup guide |
 | `harness-guidebook.md` | 1013 lines | Full harness architecture guide |
 | `red-team-handover.md` | 633 lines | Full red-team audit contract |
 | `anti-cheating-contract.md` | 147 lines | Integrity-gating invariants |
-| `pitfalls-22.md` | 200 lines | Symptom/cause/fix for all 22 pitfalls |
+| `pitfalls-24.md` | 200 lines | Symptom/cause/fix for all 24 pitfalls |
 
 Located at `~/.codex/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/`.
 

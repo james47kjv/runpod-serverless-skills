@@ -6,13 +6,13 @@ description: Use when a RunPod Serverless deploy is stuck, failing, or behaving 
 # RunPod Serverless Debug Triage
 
 > **Purpose.** Decision tree for diagnosing why a RunPod Serverless
-> deploy is misbehaving, mapping the symptom to one of the 22 known
+> deploy is misbehaving, mapping the symptom to one of the 24 known
 > pitfalls, and dispatching the correct fix.
 
 **Version:** 2.0.0
 **Sibling skills:** `runpod-serverless-deploy` (happy path),
 `runpod-red-team` (canary + audit).
-**Reference:** `runpod-serverless-deploy/REFERENCES/pitfalls-22.md`.
+**Reference:** `runpod-serverless-deploy/REFERENCES/pitfalls-24.md`.
 
 ---
 
@@ -69,14 +69,18 @@ for w in d.get('workers',[]):
     print(f\"  {w.get('id')}: status={w.get('desiredStatus')} lastStart={w.get('lastStartedAt')} img=...{w.get('imageName','')[-35:]}\")"
 ```
 
+**Before reading the table below, check `locations` / `dataCenterIds` first.** GraphQL: `{ myself { endpoints { id name locations workersStandby } } }`. If `locations` is anything other than null/empty, the endpoint is region-pinned and the scheduler can only see GPUs in that region — you'll get `workersStandby=1, workers=0` indefinitely even when RunPod has free capacity elsewhere. **Endpoints must be GLOBAL.** Fix: re-deploy with the spec's `dataCenterIds`/`locations` keys removed (the deploy script must serialize `null` for `locations`, not a region list). See pitfall #20 below.
+
 | Pattern | Likely pitfall | Fix |
 |---|---|---|
 | `min/max` are `0/0` | endpoint is drained | set `workersMin=1, workersMax=1` via saveEndpoint |
+| `locations: "US"` / `["EU-RO-1"]` / any non-null region value | **pitfall 20** — region-pinned endpoint can't draw from RunPod's global GPU fleet | re-deploy with `locations=null`; remove `dataCenterIds`/`locations` from the spec (also see pitfall #21 below — the deploy script must hard-reject specs that try to set them) |
 | `min=1, max=1, standby=1`, workers list shows EXITED from >1h ago | stale worker record; new spawn pending | wait; RunPod API shows the last worker even after it's gone. Poll `/ping` every 30s for up to 15 min |
-| `min=1, max=1, standby=1`, workers list empty | **pitfall 15** — pool unavailable, scheduler hasn't fallen through | reorder `gpuIds` with a higher-supply pool first (check RunPod UI's "Edit Endpoint" pane for real-time supply) |
+| `min=1, max=1, standby=1`, workers list empty | **pitfall 15** — pool unavailable, scheduler hasn't fallen through (FIRST verify the endpoint is GLOBAL — region-pinning is the more common cause and looks identical) | reorder `gpuIds` with a higher-supply pool first (check RunPod UI's "Edit Endpoint" pane for real-time supply) |
 | `min=1, max=1, standby=0`, workers empty | **pitfall 14** — single-SKU pool exhausted (`throttled` in UI) | broaden `gpuTypeIds` within the pool OR add a fallback pool to `gpuIds` |
-| Worker has imageName ending in your latest tag, status=RUNNING, but /ping still times out for >5 min | **pitfall 6** — module missing from Dockerfile COPY | check Dockerfile `COPY` manifest against `services/<app>/` file listing; check `scripts/ci/audit_build_context.py::REQUIRED_PATHS`; look for ImportError in worker logs |
+| Worker has imageName ending in your latest tag, status=RUNNING, but /ping still times out for >5 min | **pitfall 6** — module missing from Dockerfile COPY OR (**pitfall 23** — start.sh asserts on `/runpod-volume/...` cache path which doesn't exist on a no-NV serverless endpoint) | check Dockerfile `COPY` manifest against `services/<app>/` file listing; check `scripts/ci/audit_build_context.py::REQUIRED_PATHS`; look for ImportError in worker logs; verify start.sh doesn't precondition on `/runpod-volume/...` (anchor cache at `/root/.cache/huggingface` instead) |
 | Worker imageName is the OLD tag | `deploy_endpoint.py` didn't actually update the template | re-run deploy script; confirm templateId in spec matches the endpoint's templateId |
+| Worker boots, RUNNING for ~30-60s, then `Exited by Runpod` with empty Container logs panel and System logs say only `worker exited with exit code 1` | **pitfall 23** — start.sh hits `set -e` failure before any echo flushes (most often the `/runpod-volume/...` precondition described above) | add `dump_tails` helper to start.sh that emits last 80 lines of `/tmp/{uvicorn,vllm,tei}.log` on every failure path; redirect each child's stdout/stderr to those files; emit a `start_sh_entered` echo at the very top so you can prove the script ran |
 
 ### 3. Is the CI build itself failing?
 

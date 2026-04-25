@@ -155,11 +155,11 @@ Disable by removing `hooks/hooks.json` or by taking the plugin out of
 This plugin's `REFERENCES/` contains verbatim copies of the LAMP1 canon
 as of 2026-04-23:
 
-- `setup-guide-full.md` — 1,022-line serverless setup guide
+- `runpod_serverless_setup_guide.md` — 1,022-line serverless setup guide
 - `harness-guidebook.md` — 1,013-line harness architecture guide
 - `red-team-handover.md` — 505-line red-team contract
 - `anti-cheating-contract.md` — §11.9 integrity-gating excerpt
-- `pitfalls-22.md` — consolidated 22-pitfall catalog
+- `pitfalls-24.md` — consolidated 22-pitfall catalog
 
 The source of truth is `github.com/james47kjv/lamp1/tree/main/docs/`.
 This plugin is a snapshot; drift checks are manual for now — diff the

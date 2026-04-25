@@ -1,6 +1,6 @@
 # Anti-Cheating Contract — the non-negotiable integrity invariants
 
-**Extracted from** `setup-guide-full.md §11.9` — the contract every
+**Extracted from** `C:/Users/innas/runpod_serverless_setup_guide.md §11.9` — the contract every
 RunPod Serverless deploy using this plugin MUST honor. If a future
 agent asks to bypass any of these, push back. These are the lessons
 from the 2026-04-23 rebuild.
