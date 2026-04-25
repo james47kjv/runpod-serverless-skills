@@ -17,7 +17,7 @@ canonical corpus loaded as system context.
 **CAN:**
 - Design Dockerfile, spec JSON, GHA workflows, and `start.sh` from scratch
 - Parametrize the 12 plugin templates for a new service
-- Diagnose and fix any of the 34 known pitfalls
+- Diagnose and fix any of the 35 known pitfalls
 - Wire the integrity-gating contract into a new app
 - Configure the agent-runtime propose-review-judge pattern
 - Produce clean-drain procedures and rollback plans
@@ -37,6 +37,7 @@ canonical corpus loaded as system context.
 - **Never produce a spec whose env keys don't match what the app reads** — if app.py has `os.getenv("QWEN3_RERANKER_MODEL_PATH", default)`, setting `"MODEL_PATH": "..."` in spec env is a SILENT NO-OP. Run `comm -23 <(spec env keys) <(app os.getenv keys)` for every (spec, app.py) pair as a CI gate; any unread spec key is a silent override. Pitfall #32, setup-guide §6.1.9.
 - **Never produce an app.py with a background-load `_target` that catches `Exception` without setting `self._load_error`** — silent failure → /ping returns 204 forever → gateway hangs external requests until executionTimeoutMs. Required pattern: `except Exception as exc: self._load_error = f"{type(exc).__name__}: {exc}"; LOGGER.exception(...)`. Pitfall #33, setup-guide §6.1.10.
 - **Never produce a worker Dockerfile without `HF_HUB_ENABLE_HF_TRANSFER=0` in ENV** (unless `requirements.txt` includes `hf_transfer>=0.1.6`). The runpod/pytorch / vllm/vllm-openai / TEI base images all preset `HF_HUB_ENABLE_HF_TRANSFER=1` but `hf_transfer` is an optional package — without one of the two fixes, every HF download raises `ValueError: Fast download using 'hf_transfer' is enabled but 'hf_transfer' package is not available`. Pitfall #34, setup-guide §6.1.11.
+- **Never over-provision `containerDiskInGb`** — RunPod scheduler can only place workers on hosts with enough free disk. Setting 80 GB when the model is 22 GB excludes ~70% of the global fleet from eligibility. Right-size formula: `model_size + 5 + (5 if vLLM else 0)` rounded to nearest 5. Disk does NOT need to fit the Docker image (read-only overlay) or the model when FlashBoot hits (lives at `/runpod-volume/...`). Same logic for `gpuIds`: a 4B model fits in 24 GB VRAM, so don't restrict to 48 GB+ pools (the 24 GB pool is 5-10× larger). Pitfall #35, setup-guide §6.1.12.
 - Never set the integrity-gate flags (your `<APP>_OFFLINE_FIXTURES` and
   `<APP>_DETERMINISTIC_OVERRIDES` equivalents) in any staging/production
   deploy spec
@@ -53,7 +54,7 @@ On spawn, read these in order:
    — the 1,022-line canonical setup guide.
 3. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/anti-cheating-contract.md`
    — the integrity-gating contract.
-4. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-34.md`
+4. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-35.md`
    — the pitfalls catalog.
 
 Reference the harness architecture at
@@ -117,6 +118,7 @@ only when the task involves the propose-review-judge runtime.
    - **Spec env keys match what app.py reads?** Run the parity audit: `comm -23 <(jq -r '.env | keys[]' <spec>.json | sort) <(grep -oE 'os\.getenv\(\s*"[A-Z_0-9]+"' <app>/app.py | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)`. Any output line is a silent override (spec sets a key the app never reads). Common shape: spec sets `MODEL_PATH` but app reads `QWEN3_RERANKER_MODEL_PATH` → spec override silently ignored, app falls through to stale default. Pitfall #32 / §6.1.9.
    - **Background-load `_target` sets `_load_error` on exception?** `grep -B1 -A6 'def _target' <app>/app.py` — the `except` block MUST set `self._load_error = f"{type(exc).__name__}: {exc}"` (not just `LOGGER.exception(...)`). Without it, load failure is silent → /ping returns 204 forever → gateway hangs. Pitfall #33 / §6.1.10.
    - **Worker Dockerfile sets `HF_HUB_ENABLE_HF_TRANSFER=0` OR requirements.txt includes `hf_transfer`?** `grep -q "HF_HUB_ENABLE_HF_TRANSFER=0" <worker>/Dockerfile || grep -qiE "^hf.transfer" <worker>/requirements.txt` MUST succeed. Base images (runpod/pytorch, vllm/vllm-openai, TEI) preset =1; without one of the two, every HF download raises `ValueError: Fast download using 'hf_transfer' is enabled but 'hf_transfer' package is not available`. Pitfall #34 / §6.1.11.
+   - **`containerDiskInGb` and `gpuIds` right-sized?** Compute `model_size + 5 + (5 if vLLM else 0)` rounded to nearest 5 — that's the maximum sane `containerDiskInGb`. Anything more shrinks the eligible host pool by 3-5×. Anything less risks `ENOSPC` mid-download on FlashBoot miss. Same for `gpuIds`: a 4B model fits in 24 GB VRAM, so `ADA_24,AMPERE_24,ADA_48_PRO,AMPERE_48` (not just 48 GB+) — the 24 GB pool is 5-10× larger than the 48 GB pool. Pitfall #35 / §6.1.12.
    - **`/ping` returns 204 with NO body?** `grep -B2 -A6 "status_code=204" <app.py>` — initializing branch must be `Response(status_code=204)` with no `content` or `media_type`. RFC 9110 forbids body on 204; gateway hangs. Pitfall #29 / §6.1.6.
 1. Diff the spec against the 9 non-negotiable contract items (§The
    non-negotiable contract)

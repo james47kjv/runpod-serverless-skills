@@ -21,7 +21,7 @@ FROM vllm/vllm-openai:v0.19.1-cu130-ubuntu2404
 # args, causing `vllm-server bash /app/services/<APP>/start.sh` to run, dying
 # in milliseconds with "exit code 1" and ZERO Container logs because start.sh
 # never ran. Explicit ENTRYPOINT is the only robust pattern across runtimes.
-# See pitfalls-34.md #27 and setup-guide §6.1.4 for the full breakdown.
+# See pitfalls-35.md #27 and setup-guide §6.1.4 for the full breakdown.
 ENTRYPOINT ["bash", "/app/services/<APP>/start.sh"]
 
 ENV DEBIAN_FRONTEND=noninteractive \

@@ -6,13 +6,13 @@ description: Use when a RunPod Serverless deploy is stuck, failing, or behaving 
 # RunPod Serverless Debug Triage
 
 > **Purpose.** Decision tree for diagnosing why a RunPod Serverless
-> deploy is misbehaving, mapping the symptom to one of the 34 known
+> deploy is misbehaving, mapping the symptom to one of the 35 known
 > pitfalls, and dispatching the correct fix.
 
 **Version:** 2.0.0
 **Sibling skills:** `runpod-serverless-deploy` (happy path),
 `runpod-red-team` (canary + audit).
-**Reference:** `runpod-serverless-deploy/REFERENCES/pitfalls-34.md`.
+**Reference:** `runpod-serverless-deploy/REFERENCES/pitfalls-35.md`.
 
 ---
 
@@ -69,7 +69,7 @@ for w in d.get('workers',[]):
     print(f\"  {w.get('id')}: status={w.get('desiredStatus')} lastStart={w.get('lastStartedAt')} img=...{w.get('imageName','')[-35:]}\")"
 ```
 
-**Before reading the table below, do these TEN zero-cost checks first — they are the ten silent killers and look identical to real boot failures:**
+**Before reading the table below, do these ELEVEN zero-cost checks first — they are the eleven silent killers and look identical to real boot failures:**
 
 1. **Check Dockerfile's `ENTRYPOINT` is set explicitly (NOT `[]`).** `grep -E "^ENTRYPOINT|^CMD" <Dockerfile>` — must show `ENTRYPOINT ["bash", "/app/start.sh"]` (or similar explicit script invocation), NOT `ENTRYPOINT []`. RunPod's runtime does not reliably honor empty-array ENTRYPOINT and falls back to the base image's inherited entrypoint, which then runs your `dockerStartCmd` as args (e.g. TEI's `cuda-all-entrypoint.sh` `exec`s `text-embeddings-router-XX "$@"`, treating "bash" as the model ID). Symptom: `dockerStartCmd` IS verifiably set on the worker, PORT_HEALTH IS set, but `start_sh_entered` STILL doesn't appear in Container logs and worker exits 1 in <60s. Pattern is invariant across every GPU pool and every region — that invariance is the tell. Fix: set `ENTRYPOINT ["bash", "/app/start.sh"]` and `CMD []` in Dockerfile, rebuild image. See pitfall #27.
 
@@ -97,6 +97,8 @@ for w in d.get('workers',[]):
 9. **Check `_target` background-load thread sets `_load_error` on exception.** `grep -B1 -A6 'def _target' <app>/app.py` — the `except` block MUST set `self._load_error = f"{type(exc).__name__}: {exc}"`. If only `LOGGER.exception(...)` is present, that's the bug: thread dies silently, `load_state()` returns "idle", next /ping spawns a fresh thread that crashes identically, /ping returns 204 (initializing) FOREVER, gateway hangs external requests until executionTimeoutMs. The traceback IS in container logs but never affects /ping's contract — the diagnostic is right but the response contract LIES. Fix: set `self._load_error` so /ping returns 500 on terminal failure. See pitfall #33.
 
 10. **Check Dockerfile sets `HF_HUB_ENABLE_HF_TRANSFER=0` OR requirements.txt includes `hf_transfer`.** `grep -q "HF_HUB_ENABLE_HF_TRANSFER=0" <worker>/Dockerfile || grep -qiE "^hf.transfer" <worker>/requirements.txt` MUST succeed. If neither, base images (runpod/pytorch, vllm/vllm-openai, TEI) preset `HF_HUB_ENABLE_HF_TRANSFER=1` in image ENV but `hf_transfer` is an optional package — every snapshot_download / hf_hub_download raises `ValueError: Fast download using 'hf_transfer' is enabled but 'hf_transfer' package is not available`, then `ModuleNotFoundError: No module named 'hf_transfer'`. Model never loads. Fix: set `HF_HUB_ENABLE_HF_TRANSFER=0` in Dockerfile ENV (preferred — bakes into image) AND/OR in spec env (overrides without rebuild). See pitfall #34.
+
+11. **Check `containerDiskInGb` and `gpuIds` are right-sized.** Compute `model_size_gb + 5 + (5 if vLLM else 0)` rounded UP to nearest 5 — that's the maximum sane `containerDiskInGb`. If the spec value is >2× this, that's pitfall #35: scheduler can only place workers on hosts with enough free disk; over-sized request shrinks the eligible host pool by 3-5×. Same for `gpuIds` — a 4B model fits in 24 GB VRAM, so restricting to 48 GB+ pools (`AMPERE_48,ADA_48_PRO`) excludes the 24 GB pool which is 5-10× larger. Symptom: workers stuck in "Rented by User" state forever, never progressing to Resumed/RUNNING; or "Exited by Runpod" without container logs; `workersStandby=1, workers=0` for extended periods despite global capacity. Fix: right-size `containerDiskInGb` per the formula; broaden `gpuIds` to the smallest pool that fits the model's VRAM budget. See pitfall #35.
 
 > **Order matters.** Run check #1 before #2 because pitfall #27 (ENTRYPOINT hijack) makes pitfall #26 (`dockerStartCmd`) appear "fixed" while still failing — the spec field is set but the inherited entrypoint hijacks it. Both can be present simultaneously; check the Dockerfile FIRST.
 

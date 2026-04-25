@@ -120,7 +120,7 @@ Every deploy using this skill MUST satisfy ALL of these. No exceptions.
     section 6.1.7.
 
 If the user asks you to skip any of these, push back. These are the
-lessons from the 34 pitfalls catalogued in `REFERENCES/pitfalls-34.md`.
+lessons from the 35 pitfalls catalogued in `REFERENCES/pitfalls-35.md`.
 
 See `REFERENCES/anti-cheating-contract.md` for the full #8 contract.
 
@@ -380,7 +380,7 @@ sub-agent. Quick triage:
 6. **Actions run fails in 3 s with billing message** → pitfall 7
    (account billing). Resolve at github.com/settings/billing.
 
-See `REFERENCES/pitfalls-34.md` for all 22.
+See `REFERENCES/pitfalls-35.md` for all 22.
 
 ---
 
@@ -417,7 +417,7 @@ primitives to Codex-native equivalents.
 
 ## Pitfalls — the 22 sorted by historical pain
 
-See `REFERENCES/pitfalls-34.md` for symptom/cause/fix on every pitfall.
+See `REFERENCES/pitfalls-35.md` for symptom/cause/fix on every pitfall.
 Summary:
 
 | # | Category | One-line |
@@ -453,7 +453,7 @@ Summary:
 2. Run `audit_digest.py` against the live endpoint and commit
    `release/drift-audit-<UTC>.json`.
 3. If you added a NEW pitfall to the list (23rd), update
-   `REFERENCES/pitfalls-34.md`, bump the skill version, and update
+   `REFERENCES/pitfalls-35.md`, bump the skill version, and update
    the hook + table above.
 4. If Graphiti memory is wired, write an episode with: image ref,
    endpoint IDs, canary pass rate, cold-start observed, any deviations

@@ -30,7 +30,7 @@ depth:
 | `harness-guidebook.md` | 1013 lines | Full harness architecture guide |
 | `red-team-handover.md` | 633 lines | Full red-team audit contract |
 | `anti-cheating-contract.md` | 147 lines | Integrity-gating invariants |
-| `pitfalls-34.md` | 200 lines | Symptom/cause/fix for all 24 pitfalls |
+| `pitfalls-35.md` | 200 lines | Symptom/cause/fix for all 24 pitfalls |
 
 Located at `~/.codex/runpod-serverless/skills/runpod-serverless-deploy/REFERENCES/`.
 

@@ -159,7 +159,7 @@ as of 2026-04-23:
 - `harness-guidebook.md` — 1,013-line harness architecture guide
 - `red-team-handover.md` — 505-line red-team contract
 - `anti-cheating-contract.md` — §11.9 integrity-gating excerpt
-- `pitfalls-34.md` — consolidated 22-pitfall catalog
+- `pitfalls-35.md` — consolidated 22-pitfall catalog
 
 The source of truth is `github.com/james47kjv/lamp1/tree/main/docs/`.
 This plugin is a snapshot; drift checks are manual for now — diff the

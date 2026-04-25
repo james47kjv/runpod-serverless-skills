@@ -21,7 +21,7 @@ making things worse.
 - Bounce workers (workersMax=0 → 0 → 1)
 - Pin `workersMin=1` to force a warm spawn
 - Read the last 3 canary reports to detect regressions
-- Correlate symptoms to the 34 pitfalls
+- Correlate symptoms to the 35 pitfalls
 
 **CANNOT:**
 - Edit source code during an active incident
@@ -36,7 +36,7 @@ On spawn, read in order:
 
 1. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-debug/SKILL.md`
    — triage decision tree.
-2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-34.md`
+2. `${CLAUDE_PLUGIN_ROOT}/skills/runpod-serverless-deploy/REFERENCES/pitfalls-35.md`
    — symptom/cause/fix for all 31. Pay particular attention to #23
    (region-pinned endpoint can't draw from RunPod's GLOBAL fleet),
    #24 (start.sh asserts on `/runpod-volume/...` cache path that
@@ -59,7 +59,7 @@ On spawn, read in order:
    rule, §6.1.4 explicit-ENTRYPOINT-mandatory rule, §11.6 cold-start
    reality, §11.7 scaler cascade + clean drain.
 
-**First triage on every incident: run these TEN zero-cost checks before anything else. Order matters — check #1 first because pitfall #27 makes #2 look "fixed" while still failing.**
+**First triage on every incident: run these ELEVEN zero-cost checks before anything else. Order matters — check #1 first because pitfall #27 makes #2 look "fixed" while still failing.**
 
 1. **Is the Dockerfile's `ENTRYPOINT` explicit?** Read the
    Dockerfile of the worker image and check the `ENTRYPOINT` line.
@@ -190,10 +190,25 @@ On spawn, read in order:
     into image) and/or in spec env (overrides without rebuild). See
     setup-guide §6.1.11.
 
+11. **Is `containerDiskInGb` over-provisioned?** Read the spec's
+    `containerDiskInGb`. Compute model_size_gb from HF storage panel
+    (or `huggingface-cli scan-cache`). Right-sized value is
+    `model_size + 5 + (5 if vLLM else 0)` rounded to nearest 5. If
+    the spec value is >2× this, that's pitfall #35: the scheduler
+    can only place workers on hosts with enough free disk; over-sized
+    request shrinks the eligible host pool by 3-5×. Symptom: workers
+    stuck in "Rented by User" state forever, never progressing to
+    Resumed/RUNNING; or "Exited by Runpod" without container logs.
+    Same logic applies to `gpuIds` — restricting to 48 GB+ pools for
+    a 4B model that fits in 24 GB shrinks the host pool by ~5-10×.
+    Fix: right-size `containerDiskInGb` per the formula above; broaden
+    `gpuIds` to include the smallest pool that fits the model's VRAM
+    budget. See setup-guide §6.1.12.
+
 **Anti-pattern to recognize:** if you find yourself reaching for
 `workersMin: 1` + `flashBootType: OFF` to "fix" `/ping` timeouts,
 **STOP**. That combination defeats serverless entirely (pay-per-use
-becomes pay-always, ~$35-95/day for 5 endpoints). Walk steps 1-10
+becomes pay-always, ~$35-95/day for 5 endpoints). Walk steps 1-11
 again. The actual cause is one of these silent killers, not
 "FlashBoot is broken".
 
@@ -232,7 +247,7 @@ gh run list --repo <OWNER>/<REPO> --workflow build-image.yml --limit 3 \
 ls -lt reports/redteam/ | head -5
 ```
 
-### 3. Match to the 34 pitfalls
+### 3. Match to the 35 pitfalls
 
 Use the debug skill's decision tree. Most common in my experience:
 
@@ -245,6 +260,7 @@ Use the debug skill's decision tree. Most common in my experience:
 | Worker RUNNING; container logs show `RuntimeError: model path does not exist: /runpod-volume/models/<old-default>`; the path in the error is NOT what your spec sets; "fixed" by adding to spec env, redeploy, same wrong path is still in the error | **32 (spec-app env-var name mismatch)** — spec sets `MODEL_PATH` but app reads `QWEN3_RERANKER_MODEL_PATH`, override is silently ignored, falls through to stale pod-based default | run `comm -23 <(spec env keys) <(app os.getenv keys)` parity audit; rename spec keys to match app, OR add fallback chain in app |
 | Worker RUNNING; /ping returns 204 forever; container logs show repeating `ERROR:nonnon_<service>:Background preload failed` with Python traceback every few seconds; gateway times out external requests at executionTimeoutMs | **33 (background load swallows exception → /ping stuck at 204)** — `_target` thread catches exception with `LOGGER.exception(...)` but never sets `self._load_error`; load_state() falls back to "idle"; next /ping spawns fresh thread that crashes identically; loop forever | inside `_target`'s `except`, set `self._load_error = f"{type(exc).__name__}: {exc}"`; rebuild image; redeploy. Now /ping returns 500 on terminal failure instead of 204 forever |
 | Worker boots, FastAPI binds, container logs show `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` plus `ModuleNotFoundError: No module named 'hf_transfer'`; every HF download attempt raises immediately; model never loads | **34 (base image presets `HF_HUB_ENABLE_HF_TRANSFER=1`, package not installed)** — runpod/pytorch / vllm/vllm-openai / TEI bases preset =1; `hf_transfer` is optional package, not always in worker requirements | set `HF_HUB_ENABLE_HF_TRANSFER=0` in Dockerfile ENV (preferred — bakes into image) AND/OR add to spec env (overrides immediately, no rebuild) |
+| Workers stuck in "Rented by User" state never progressing to RUNNING; or "Exited by Runpod" without container logs; `workersStandby=1, workers=0` for extended periods despite global capacity; pattern improves dramatically when `containerDiskInGb` is reduced or `gpuIds` is broadened | **35 (over-provisioned `containerDiskInGb` / `gpuIds`)** — scheduler can only place workers on hosts with enough free disk and the right GPU; over-sized request shrinks eligible host pool by 3-10× | right-size `containerDiskInGb` to `model_size + 5 + (5 if vLLM else 0)` rounded to nearest 5; broaden `gpuIds` to include the smallest pool that fits the model's VRAM budget |
 | Endpoint `workersStandby=1, workers=0` indefinitely with global capacity available | 23 (region-pinned) | redeploy with `locations=null`; remove `dataCenterIds`/`locations` from spec |
 | Worker boots, RUNNING <60s, EXITED with empty Container-logs panel | 24 (start.sh fails before any echo flushes) | anchor cache at `/root/.cache/huggingface`; redirect children to `/tmp/*.log`; emit `start_sh_entered` echo at top |
 | Worker goes EXITED after ~5 min of /ping=ready | 6 (missing Dockerfile COPY) | verify image file list matches `REQUIRED_PATHS` |
@@ -269,7 +285,7 @@ Hand this to the operator (parent agent). Do not run the fix.
 ### 5. Post-mortem stub
 
 If this is a novel failure mode not in the 27, draft a new pitfall
-entry for `REFERENCES/pitfalls-34.md` and suggest adding to the skill
+entry for `REFERENCES/pitfalls-35.md` and suggest adding to the skill
 decision tree. Include:
 
 - Symptom (first thing the operator sees)

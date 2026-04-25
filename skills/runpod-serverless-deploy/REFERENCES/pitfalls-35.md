@@ -854,3 +854,89 @@ historical pain level. Every one of these lost us hours; skip none.
   didn't. Bug hides until the first deploy on a fresh host with no
   FlashBoot cache (cached snapshots bypass the download path entirely).
 - **Reference:** setup-guide §6.1.11.
+
+### 35. `containerDiskInGb` over-provisioned → scheduler can't find a host
+- **Symptom:** Worker spawning is slow or unreliable. RunPod scheduler
+  shows `workersStandby=1, workers=0` for extended periods. Workers
+  occasionally appear at `desiredStatus=EXITED` with
+  `lastStatusChange="Rented by User"` but never progress to `Resumed`/`RUNNING`.
+  The endpoint feels "starved" of workers even though FlashBoot is on
+  and global capacity exists. Memory-brain workers may be marked
+  "Exited by Runpod" without container logs.
+- **Cause:** RunPod's scheduler can only place a worker on a host that
+  has enough free disk to satisfy `containerDiskInGb`. Setting this to
+  80 GB means the scheduler skips every host that has <80 GB free —
+  which is most of the global fleet at any given moment. Setting it to
+  30 GB makes the eligible host pool ~3-5× larger.
+  The default impulse ("just give it lots of disk to be safe") inverts
+  the cost model: every spare GB above what the worker actually needs
+  costs you availability, not safety.
+- **What `containerDiskInGb` covers (and what it doesn't):**
+  MUST fit:
+  - `/tmp/*` — including HF cache when FlashBoot misses
+    (`HUGGINGFACE_HUB_CACHE=/tmp/hf-cache` fallback path)
+  - Process workspaces (`/tmp/<APP>-workspaces`, application logs)
+  - vLLM compilation artifacts (~3-5 GB for medium models)
+  - HF token / config files (~10 MB)
+  Does NOT need to fit:
+  - The Docker IMAGE itself (mounted read-only via overlay from the
+    host's image cache, separate from the container's writable layer)
+  - The model snapshot when FlashBoot HITS (lives at
+    `/runpod-volume/huggingface-cache/hub/...`, host-managed mount,
+    not counted toward container disk)
+  - Anything on `/runpod-volume/*` (separate mount)
+- **Right-sizing formula:**
+  ```
+  containerDiskInGb = model_size_gb           # for cold-start without FlashBoot hit
+                    + 5                       # /tmp workspace, logs, app state
+                    + (5 if vLLM else 0)      # vLLM compilation cache
+                    → round UP to nearest 5
+  ```
+- **Worked examples (NONNON v8 cutover, 2026-04-25):**
+  | Service       | Model on HF | Engine       | OLD disk | NEW disk |
+  |---------------|-------------|--------------|---------:|---------:|
+  | embedder      |  8.06 GB    | TEI          |    50    |    20    |
+  | reranker      |  8.06 GB    | transformers |    40    |    30    |
+  | asr           |  4.7 GB     | qwen-asr     |    40    |    35    |
+  | tts           |  4.5 GB     | qwen-tts     |    40    |    30    |
+  | memory-brain  | 21.9 GB     | vLLM         |    80    |    45    |
+  Right-sized values cut scheduler-rejection rates substantially and
+  made cold-start spawn-time more reliable.
+- **Right-sizing GPU pools (companion lesson):** the same
+  over-provisioning logic applies to `gpuIds`. Restricting to 48 GB+
+  pools (`AMPERE_48,ADA_48_PRO`) for a 4B-parameter model that fits
+  in 12 GB of VRAM excludes the entire 24 GB pool (`ADA_24,AMPERE_24`
+  — RTX 4090, A5000, RTX 6000 Ada, etc.) from the scheduler. The
+  24 GB pool is ~5-10× larger than the 48 GB pool by host count.
+  GPU VRAM budget per service (BF16 weights + 2-3× activation):
+  - 1.7B model (ASR/TTS): ~5 GB → fits in 16 GB
+  - 4B model (embedder/reranker): ~12-14 GB → fits in 24 GB comfortably
+  - 35B-A3B NVFP4 (memory-brain): ~30-40 GB → needs 80 GB+ minimum,
+    96 GB+ for headroom
+  Pool selection rules:
+  - `ADA_24,AMPERE_24,ADA_48_PRO,AMPERE_48` — 4B and smaller models
+  - `ADA_48_PRO,AMPERE_48,HOPPER_141` — 7-13B BF16 models
+  - `BLACKWELL_96,BLACKWELL_180,HOPPER_141` — NVFP4 W4A4
+    (Blackwell-native), or 30B+ BF16
+- **Conservative-buffer caveat:** if you set the disk EXACTLY to
+  model+workspace, a fresh host with no FlashBoot cache must download
+  the full model to `/tmp/hf-cache` while the container is already
+  running close to disk-full. If the model is large or the download
+  is slow, you risk `ENOSPC` mid-download. The `+5 GB` buffer above
+  absorbs this; do NOT skimp on it.
+- **Detection:**
+  ```bash
+  python -c "
+  import json, os
+  for spec in os.listdir('runpod-serverless-workers/deploy/'):
+      if not spec.endswith('.production.json'): continue
+      d = json.load(open(f'runpod-serverless-workers/deploy/{spec}'))
+      print(f'{spec:40} disk={d[\"containerDiskInGb\"]:3} gpus={d[\"gpuIds\"]}')"
+  ```
+  Flag any disk value >2× model_size_gb + 10. Flag any spec
+  restricted to pools larger than the model's actual VRAM need.
+- **Common foot-gun:** the inclination to "give it more headroom to
+  be safe" is exactly backwards on serverless. Disk over-provisioning
+  shrinks the scheduler's eligible host pool, which DECREASES
+  reliability and INCREASES cold-start latency. Right-size aggressively.
+- **Reference:** setup-guide §6.1.12.

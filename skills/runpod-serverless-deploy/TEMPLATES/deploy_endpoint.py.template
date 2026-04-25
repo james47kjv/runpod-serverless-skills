@@ -602,7 +602,7 @@ def _require_port_health(spec: dict[str, Any]) -> None:
     If PORT_HEALTH is unset, the worker boots cleanly, FastAPI serves /ping
     correctly, but the gateway never sees it and the endpoint stays
     `unhealthy` forever with no error in any log. This is the silent killer
-    documented in pitfalls-34.md #25 and setup-guide §6.1.2.
+    documented in pitfalls-35.md #25 and setup-guide §6.1.2.
     """
     if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
         return
@@ -614,7 +614,7 @@ def _require_port_health(spec: dict[str, Any]) -> None:
             "appear healthy in container logs but be invisible to the "
             "gateway, and the endpoint will stay `unhealthy` forever with "
             "no error in any log. Set PORT_HEALTH in env (same value as PORT "
-            "for the standard single-port case). See pitfalls-34.md #25 and "
+            "for the standard single-port case). See pitfalls-35.md #25 and "
             "setup-guide §6.1.2."
         )
 
@@ -628,7 +628,7 @@ def _require_docker_start_cmd(spec: dict[str, Any]) -> None:
     your start.sh, dies with no args in milliseconds, and the worker exits
     code 1 with an EMPTY Container logs panel. Symptom is identical to a
     corrupt image but the cause is a missing two-line spec field. See
-    pitfalls-34.md #26 and setup-guide §6.1.3.
+    pitfalls-35.md #26 and setup-guide §6.1.3.
     """
     cmd = spec.get("dockerStartCmd")
     if not isinstance(cmd, list) or not cmd:
@@ -639,14 +639,14 @@ def _require_docker_start_cmd(spec: dict[str, Any]) -> None:
             "start.sh never runs and the worker exits code 1 with an empty "
             "Container logs panel. Set dockerStartCmd to "
             '["bash", "/app/start.sh"] (path must match where Dockerfile '
-            "copies start.sh). See pitfalls-34.md #26 and setup-guide §6.1.3."
+            "copies start.sh). See pitfalls-35.md #26 and setup-guide §6.1.3."
         )
 
 
 _FORBIDDEN_HF_CACHE_PATTERNS_BASH = (
     # Bash `:=` is a NO-OP when the var is already set (TEI/TGI/vLLM/NIM
     # bases preset HUGGINGFACE_HUB_CACHE=/data and HF_HOME=/data in image
-    # ENV). See pitfalls-34.md #31 and setup-guide §6.1.8.
+    # ENV). See pitfalls-35.md #31 and setup-guide §6.1.8.
     re.compile(r':\s*"\$\{HUGGINGFACE_HUB_CACHE\s*:='),
     re.compile(r':\s*"\$\{HF_HOME\s*:='),
 )
@@ -668,7 +668,7 @@ def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
     var is already set, so conditional assignment is silently skipped —
     runtime detection logs `location=runpod-host` but `printenv` shows
     `/data`, model loader hangs forever on ENOENT with no error in any
-    log. See pitfalls-34.md #31 and setup-guide §6.1.8.
+    log. See pitfalls-35.md #31 and setup-guide §6.1.8.
 
     Scans the spec's parent directory and adjacent service-folder for
     start.sh and boot.py files.
@@ -707,7 +707,7 @@ def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
                     "in any log. Use UNCONDITIONAL assignment: "
                     'HUGGINGFACE_HUB_CACHE=\"...\" in bash, '
                     'os.environ[\"HUGGINGFACE_HUB_CACHE\"] = \"...\" in '
-                    "Python. See pitfalls-34.md #31 and setup-guide "
+                    "Python. See pitfalls-35.md #31 and setup-guide "
                     "§6.1.8."
                 )
 
