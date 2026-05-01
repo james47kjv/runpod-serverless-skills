@@ -67,7 +67,7 @@ Every deploy using this skill MUST satisfy ALL of these. No exceptions.
 
 17. **All HF repos MUST start with** `james47kjv/`**.** The pre-deploy guard `_require_james47kjv_repo_policy()` refuses any spec that references a non-`james47kjv/*` HF repo via `modelName` or any repo-bearing env var (`NONNON_HF_MODEL_REPO`, `LAMP_HF_MODEL_REPO`, `MODEL_NAME`, `MODEL_ID`, `QWEN3_TTS_MODEL`, `SERVED_MODEL_NAME`, `QWEN3_RERANKER_MODEL_PATH`, `QWEN3_ASR_MODEL_PATH`). See setup-guide v2 §6.1.20.
 
-18. `modelName` **is UI-ONLY at the RunPod API layer.** REST PATCH rejects it; GraphQL `saveEndpoint` accepts it but silently DROPS the value (verified 2026-04-30). The ONLY working write path is the RunPod web console UI (Manage → Edit Endpoint → Model → paste `james47kjv/<repo>` → Save). After every endpoint create or rebuild the operator MUST walk the UI for each affected endpoint, then run the drift monitor (`python C:/Users/innas/architecture/scripts/monitoring/runpod_drift_monitor.py --check`) to detect any silent UI-Save reversions of `scalerType` / `idleTimeout` / `workersMin`. The 4-hourly Windows scheduled task is the safety net; do not rely on it for net-new deploys. See setup-guide v2 §6.1.20–§6.1.22.
+18. `modelName` **requires TWO Hugging Face credentials, not one.** RunPod's Model field has a *separate* "Hugging Face access token" credential slot that is distinct from the `HF_TOKEN` env var on the template. The slot is the **orchestrator's** credential (used by RunPod's own service to authenticate to HF when validating + pre-staging the configured `modelName` against the host's FlashBoot cache). The env var is the **worker container's runtime** credential. Both must be set: if only env vars are filled, every save attempt for a private `james47kjv/*` repo silently nullifies `modelName` because the orchestrator cannot validate the repo. If only the slot is filled, FlashBoot pre-stages but the worker fails on cold-start with a 401. **The orchestrator credential slot is UI-only** — REST PATCH rejects it; GraphQL `saveEndpoint` accepts the field but silently DROPS the value. Procedure for every endpoint create or rebuild: open the RunPod web console (Manage → Edit Endpoint → Model section), paste the operator's HF token into the `Hugging Face access token` slot FIRST, then type the canonical `james47kjv/<repo>` value into the `Model` field, click outside to validate, click Save. Then run `python C:/Users/innas/architecture/scripts/monitoring/runpod_drift_monitor.py --autoheal` to fix any silent reversion of `scalerType`/`idleTimeout` that the UI Save creates. The drift monitor surfaces null `modelName` as a violation but cannot auto-heal it (UI-only). See setup-guide v2 §6.1.20 (the 2026-05-01 update subsection) for the canonical per-endpoint mapping table and full walkthrough.
 
 If the user asks you to skip any of these, push back. These are the lessons from the 37 pitfalls catalogued in `REFERENCES/pitfalls-37.md`.
 
@@ -77,6 +77,7 @@ See `REFERENCES/anti-cheating-contract.md` for the full #8 contract.
 
 ## Core architecture
 
+```
 ```
 POST /v1/chat/completions
   │
