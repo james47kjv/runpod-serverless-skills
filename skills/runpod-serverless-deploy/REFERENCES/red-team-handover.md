@@ -45,7 +45,7 @@ BASE=https://pluwnqk2codj00.api.runpod.ai
 # 1. Pin workersMin=1 to force a warm worker:
 curl -sS "https://api.runpod.io/graphql" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"mutation { saveEndpoint(input: { id: \"pluwnqk2codj00\", name: \"lamp-finance-v1-staging\", templateId: \"etq1ryzcgg\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 1, workersMax: 1, idleTimeout: 300, scalerType: \"REQUEST_COUNT\", scalerValue: 1, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
+  -d '{"query":"mutation { saveEndpoint(input: { id: \"pluwnqk2codj00\", name: \"lamp-finance-v1-staging\", templateId: \"etq1ryzcgg\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 1, workersMax: 3, idleTimeout: 60, scalerType: \"QUEUE_DELAY\", scalerValue: 4, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
 
 # 2. Poll until /ping=ready (up to ~15 min):
 for i in $(seq 1 90); do
@@ -583,12 +583,12 @@ itself). After that, each request is a handful of cents. A full
 # Staging
 curl -sS "https://api.runpod.io/graphql" -H "Authorization: Bearer $RUNPOD_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"query":"mutation { saveEndpoint(input: { id: \"pluwnqk2codj00\", name: \"lamp-finance-v1-staging\", templateId: \"etq1ryzcgg\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 300, scalerType: \"REQUEST_COUNT\", scalerValue: 1, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
+  -d '{"query":"mutation { saveEndpoint(input: { id: \"pluwnqk2codj00\", name: \"lamp-finance-v1-staging\", templateId: \"etq1ryzcgg\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 60, scalerType: \"QUEUE_DELAY\", scalerValue: 4, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
 
 # Production — only if you warmed it:
 curl -sS "https://api.runpod.io/graphql" -H "Authorization: Bearer $RUNPOD_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"query":"mutation { saveEndpoint(input: { id: \"321yhaxwtkp34l\", name: \"lamp-finance-v1-production\", templateId: \"qxw923w098\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 300, scalerType: \"REQUEST_COUNT\", scalerValue: 1, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
+  -d '{"query":"mutation { saveEndpoint(input: { id: \"321yhaxwtkp34l\", name: \"lamp-finance-v1-production\", templateId: \"qxw923w098\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 60, scalerType: \"QUEUE_DELAY\", scalerValue: 4, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
 ```
 
 ---
@@ -618,7 +618,7 @@ Everything you might need to reference from the `lamp1/` tree:
 - `scripts/serverless/redteam_adversarial.py` — 34-attack scripted sweep.
 - `docs/metasystem_harness_guidebook.md` — the full architecture
   canonical reference.
-- `docs/runpod_serverless_setup_guide.md` — ops reference including
+- `docs/runpod_serverless_setup_guide_v2.md` — ops reference including
   §11.8 (agent runtime) and §11.9 (integrity gating).
 - `docs/NEW_AGENT_HANDOVER_LAMP1.md` — the operator's handover (what
   everything is).

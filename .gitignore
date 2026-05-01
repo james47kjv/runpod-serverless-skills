@@ -1,0 +1,18 @@
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local secrets (never commit; templates use placeholders)
+.env
+.env.local
+*.secret

@@ -11,7 +11,7 @@ Last updated: 2026-04-23 (hardening + vLLM canonicalization + red-team validatio
 
 Sibling canonical docs (read these together with this one — all live in THIS repo under `docs/`):
 
-1. `docs/runpod_serverless_setup_guide.md` — serverless deployment, cold-start reality, scaler behavior, security hardening at the endpoint layer.
+1. `docs/runpod_serverless_setup_guide_v2.md` — serverless deployment, cold-start reality, scaler behavior, security hardening at the endpoint layer.
 2. `docs/RED_TEAM_HANDOVER.md` — independent-auditor instruction set; the prohibited-string inventory that the harness MUST NOT emit.
 3. `docs/SYNTHETIC_VALS_QUESTIONS_V1.md` — 50 forward-looking questions the harness must generalize to.
 
@@ -672,7 +672,7 @@ Every serious metasystem harness run should leave file-backed state.
 
 Canonical workspace artifacts include:
 
-1. `request.json` — full inbound HTTP body (needed for cross-environment parity diff; see `runpod_serverless_setup_guide.md §11.7a`)
+1. `request.json` — full inbound HTTP body (needed for cross-environment parity diff; see `runpod_serverless_setup_guide_v2.md §11.7a`)
 2. `plan.json`
 3. `route_decision.json`
 4. `evidence.json` — includes `diagnostics[]` with structured failure records; NEVER a silent exception catch
@@ -691,7 +691,7 @@ Reasons the list is load-bearing:
 1. if the harness fails, the trace must be reviewable
 2. if a candidate wins incorrectly, the selection path must be reconstructable
 3. if the model disagrees with the evidence, the mismatch must be auditable
-4. **cross-environment parity** — staging and production running the same image digest MUST produce byte-equal `answer_sha256` on deterministic-path questions; `request.json` + `final_contract.json` + the sources list are the diff surface used by `scripts/serverless/compare_reports.py` (see `docs/runpod_serverless_setup_guide.md §11.7a.2`). If you add a new candidate-selection code path, it MUST land something into `candidates/` so the parity-diff tooling can see where divergence came from.
+4. **cross-environment parity** — staging and production running the same image digest MUST produce byte-equal `answer_sha256` on deterministic-path questions; `request.json` + `final_contract.json` + the sources list are the diff surface used by `scripts/serverless/compare_reports.py` (see `docs/runpod_serverless_setup_guide_v2.md §11.7a.2`). If you add a new candidate-selection code path, it MUST land something into `candidates/` so the parity-diff tooling can see where divergence came from.
 5. **release baseline** — a successful promotion freezes the entire workspace directory alongside `release/baseline/<env>-<ts>/` so future releases can diff against it and prove non-regression.
 
 ## 10. Memory And Policy Rules
@@ -893,8 +893,8 @@ These patterns caused real damage and must not be revived.
 12. Treating manual one-off infrastructure mutations as canonical deployment state.
 13. **Catching `ImportError` (or any broad exception) silently in a critical path.** The 2026-04-23 incident: `lamp_evidence_compiler/__init__.py` is a shim that imports from a sibling directory `lamp-evidence-compiler/` (hyphenated). On first deploy the hyphenated directory was not staged into the image; `from lamp_evidence_compiler import compile_evidence` raised `ModuleNotFoundError`; the exception was caught silently in `adapters/evidence_compiler.py:_load_live_evidence`; 14 of 50 benchmark questions fell through to synthetic evidence and fail-closed with `programmatic_extraction_failed` bleeding into their answers. Guardrails added: (a) `scripts/ci/audit_build_context.py` required-paths allowlist enforces the Dockerfile COPY manifest matches the repo; (b) `tests/test_runtime_imports.py` parametrizes every module the endpoint imports and fails CI if any import fails; (c) `_load_live_evidence` now records the exception as a structured diagnostic before falling through.
 14. **Skipping the `§11` security hardening because "the model will handle it."** The model will not. The Qwen3.5-based abliterated checkpoint serves any off-domain question. Scope guard + scrubber + workspace regex + hardened prompt are the ONLY barriers. Shipping a Vals-facing endpoint without all four is a direct leak and scope-violation risk.
-15. **Pointing the endpoint at an engine that lacks a code path for the quantization × GPU combo.** SGLang v0.5.10.post1 has no W4A4 NVFP4 scheme for Hopper AT ALL, and its Blackwell path crashes in `flashinfer_cudnn` during CUDA graph capture. Before committing a new engine to a new Dockerfile, boot the model under it on a cheap pod for 2 minutes and grep the log for the quantization scheme name. A 2-minute probe saves a 50-minute CI rebuild. For the current Qwen3.5 NVFP4 checkpoint the canonical engine is **vLLM v0.19.1+** on `vllm/vllm-openai:v0.19.1-cu130-ubuntu2404`. See `docs/runpod_serverless_setup_guide.md §2`.
-16. **Running a scaler-driven scale-to-zero flip without understanding the cascade.** On RunPod LOAD_BALANCER endpoints, `workersMin=0, workersMax=N (N>0)` with traffic-driven standby can spawn replacements as old workers drain, producing a worker-count increase during what you thought was a shutdown. The only deterministic "off" state is `workersMax=0`. See `docs/runpod_serverless_setup_guide.md §11.7`.
+15. **Pointing the endpoint at an engine that lacks a code path for the quantization × GPU combo.** SGLang v0.5.10.post1 has no W4A4 NVFP4 scheme for Hopper AT ALL, and its Blackwell path crashes in `flashinfer_cudnn` during CUDA graph capture. Before committing a new engine to a new Dockerfile, boot the model under it on a cheap pod for 2 minutes and grep the log for the quantization scheme name. A 2-minute probe saves a 50-minute CI rebuild. For the current Qwen3.5 NVFP4 checkpoint the canonical engine is **vLLM v0.19.1+** on `vllm/vllm-openai:v0.19.1-cu130-ubuntu2404`. See `docs/runpod_serverless_setup_guide_v2.md §2`.
+16. **Running a scaler-driven scale-to-zero flip without understanding the cascade.** On RunPod LOAD_BALANCER endpoints, `workersMin=0, workersMax=N (N>0)` with traffic-driven standby can spawn replacements as old workers drain, producing a worker-count increase during what you thought was a shutdown. The only deterministic "off" state is `workersMax=0`. See `docs/runpod_serverless_setup_guide_v2.md §11.7`.
 17. **Eagerly loading every endpoint submodule in the package `__init__.py`.** The 2026-04-23 rebuild shipped `services/finance_endpoint/__init__.py` with an eager `importlib.util` load of `services/finance-endpoint/agent_runtime.py`. Any import-time breakage inside the agent_runtime chain (candidates, verifiers, critic) took down the whole container before FastAPI could call `app.startup`. Fix: make non-essential sibling modules lazy via a wrapper function (`_install_agent_runtime`) called inside a try/except at shim-import time, so a broken subsystem degrades to the §3.2 fallback rather than crashing the worker. Every subsystem that `app.py` calls must also be wrapped in try/except at the call site.
 18. **Returning a dict from a candidate when its contract says string.** `ModelClient.chat_completion` returns `{"content": str, "latency_ms": float, ...}`. `adapters/candidates/model_synthesis._model_call` was doing `str(response)` and emitting literal `{'content': '...'}` text in the final answer (observed on v1 public-50 canary). Fix: unwrap `response["content"]` before returning. Applies to every candidate that calls into `ModelClient` or any other structured-response subsystem.
 19. **Dropping a new file into `services/finance-endpoint/` without updating the Dockerfile COPY list AND the CI audit allowlist.** The 2026-04-23 first deploy of `agent_runtime.py` failed because the Dockerfile only COPYs `app.py` + `start.sh` from that directory — `agent_runtime.py` was absent in the image. The worker reached `desiredStatus=EXITED` 22 min into warm-up with no `/ping` response. `scripts/ci/audit_build_context.py` was blind to the gap because the file was also not in `REQUIRED_PATHS`. Every new application module under `services/finance-endpoint/` requires: (a) explicit `COPY` line in the Dockerfile, (b) entry in `audit_build_context.REQUIRED_PATHS`, (c) entry in `tests/test_runtime_imports.py` parametrized smoke, (d) reference in the relevant doc section.
@@ -976,7 +976,7 @@ When updating or reviewing the metasystem harness, these are the primary files o
 **Endpoint runtime + boot contract:**
 
 10. `services/finance-endpoint/app.py` — FastAPI harness, scope guard (§11.1), workspace regex (§11.2), scrubber (§11.3), hardened fallback prompt (§11.4).
-11. `services/finance-endpoint/start.sh` — loud-fail boot contract; must emit structured JSON at every stage and treat child-exit(0) as failure. See `docs/runpod_serverless_setup_guide.md §7`.
+11. `services/finance-endpoint/start.sh` — loud-fail boot contract; must emit structured JSON at every stage and treat child-exit(0) as failure. See `docs/runpod_serverless_setup_guide_v2.md §7`.
 12. `services/finance-endpoint/Dockerfile` — image-based, vLLM v0.19.1 base, model weights NOT baked.
 13. `services/finance_endpoint/__init__.py` — import shim that exposes the hyphenated `services/finance-endpoint/app.py` as `services.finance_endpoint:app` for uvicorn.
 
@@ -997,7 +997,7 @@ When updating or reviewing the metasystem harness, these are the primary files o
 
 **Canonical docs:**
 
-20. `docs/runpod_serverless_setup_guide.md` — serverless deployment, engine choice, spec contract, scale-to-zero mechanics, security hardening sections §11.5–§11.7, agent-runtime flag (§11.8), integrity gates (§11.9).
+20. `docs/runpod_serverless_setup_guide_v2.md` — serverless deployment, engine choice, spec contract, scale-to-zero mechanics, security hardening sections §11.5–§11.7, agent-runtime flag (§11.8), integrity gates (§11.9).
 21. `docs/RED_TEAM_HANDOVER.md` — auditor instruction set and prohibited-string inventory.
 22. `docs/SYNTHETIC_VALS_QUESTIONS_V1.md` — 50 forward-looking test prompts.
 23. `docs/VALS_REBUILD_FINAL_2026-04-23.md` — final session report: architecture delivered, canary baselines, content-level levers that would push the score higher.

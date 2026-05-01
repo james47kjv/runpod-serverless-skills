@@ -134,7 +134,7 @@ API_PORT="${PORT:-${<APP>_API_PORT:-8080}}"
 # Bind FastAPI's /ping route to this port. If unset, fall back to API_PORT and
 # emit a structured WARNING — the deploy-side guard (deploy_endpoint.py
 # _require_port_health) is the primary defense, this log line is the
-# diagnostic-of-last-resort. See pitfalls-35.md #25 / setup-guide §6.1.2.
+# diagnostic-of-last-resort. See pitfalls-37.md #25 / setup-guide §6.1.2.
 HEALTH_PORT="${PORT_HEALTH:-}"
 if [[ -z "${HEALTH_PORT}" ]]; then
     log WARN port_health_unset "PORT_HEALTH is unset — RunPod's LB poller will not find /ping; falling back to ${API_PORT} so the in-container app still works"
