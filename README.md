@@ -22,7 +22,7 @@ FastAPI + Qwen3.5 NVFP4 vLLM inference stack to RunPod Serverless with:
 - **5 slash commands** — `/rp-deploy`, `/rp-canary`, `/rp-drain`, `/rp-warm`, `/rp-audit`
 - **13 templates** — `Dockerfile`, `start.sh`, spec JSON, GHA workflows, `audit_build_context.py`, `deploy_endpoint.py`, canary + grader scripts, integrity-assertion snippet
 - **1 hook** — auto-audit after any `saveEndpoint` mutation (enabled by default; see below)
-- **5 reference documents** — the full canonical corpus (2,544 lines across 4 files + a 22-pitfall catalog)
+- **5 reference documents** — the full canonical corpus (2,544 lines across 4 files + a 37-pitfall catalog)
 - **Cross-agent bootstrap** — `.codex/` shim for Codex; Cursor integration via repo-level `AGENTS.md` pointer
 
 ## Install
@@ -155,11 +155,11 @@ Disable by removing `hooks/hooks.json` or by taking the plugin out of
 This plugin's `REFERENCES/` contains verbatim copies of the LAMP1 canon
 as of 2026-04-23:
 
-- `runpod_serverless_setup_guide.md` — 1,022-line serverless setup guide
+- `runpod_serverless_setup_guide_v2.md` — 1,022-line serverless setup guide
 - `harness-guidebook.md` — 1,013-line harness architecture guide
 - `red-team-handover.md` — 505-line red-team contract
 - `anti-cheating-contract.md` — §11.9 integrity-gating excerpt
-- `pitfalls-35.md` — consolidated 22-pitfall catalog
+- `pitfalls-37.md` — consolidated 37-pitfall catalog
 
 The source of truth is `github.com/james47kjv/lamp1/tree/main/docs/`.
 This plugin is a snapshot; drift checks are manual for now — diff the

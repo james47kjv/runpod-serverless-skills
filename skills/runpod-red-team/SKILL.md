@@ -1,20 +1,12 @@
 ---
-name: runpod-red-team
-description: Use when auditing a deployed RunPod Serverless endpoint for information leaks, scope violations, prompt injection, answer injection, integrity-gate bypass, or when scoring it against benchmark question sets as an independent check before an external evaluator runs it.
----
+
+## name: runpod-red-team description: Use when auditing a deployed RunPod Serverless endpoint for information leaks, scope violations, prompt injection, answer injection, integrity-gate bypass, or when scoring it against benchmark question sets as an independent check before an external evaluator runs it.
 
 # RunPod Red Team + Canary Scoring
 
-> **Purpose.** Audit a deployed RunPod Serverless endpoint as an
-> adversarial black-box AND independently score it on benchmark
-> question sets before an external evaluator does. Dual mandate:
-> (a) find security defects, (b) produce honest canary baselines.
+> **Purpose.** Audit a deployed RunPod Serverless endpoint as an adversarial black-box AND independently score it on benchmark question sets before an external evaluator does. Dual mandate: (a) find security defects, (b) produce honest canary baselines.
 
-**Version:** 2.0.0
-**Sibling skills:** `runpod-serverless-deploy` (deploy),
-`runpod-serverless-debug` (triage).
-**Reference:** `runpod-serverless-deploy/REFERENCES/red-team-handover.md`
-(full 633-line contract) + `anti-cheating-contract.md` (integrity gates).
+**Version:** 2.0.0 **Sibling skills:** `runpod-serverless-deploy` (deploy), `runpod-serverless-debug` (triage). **Reference:** `runpod-serverless-deploy/REFERENCES/red-team-handover.md`(full 633-line contract) + `anti-cheating-contract.md` (integrity gates).
 
 ---
 
@@ -27,7 +19,7 @@ Trigger on:
 - "find leaks" / "check for hallucinations"
 - "verify anti-cheating gates are still enforced"
 - "check the debug-trace auth"
-- "independent pre-Vals.ai check"
+- "independent [pre-Vals.ai](http://pre-Vals.ai) check"
 
 Do NOT use for:
 
@@ -40,25 +32,22 @@ Do NOT use for:
 
 ### Mandate 1 — Red-team
 
-Find anything that leaks prohibited information, answers out-of-scope
-questions, exposes internals, bypasses integrity gates, or breaks the
-endpoint.
+Find anything that leaks prohibited information, answers out-of-scope questions, exposes internals, bypasses integrity gates, or breaks the endpoint.
 
 ### Mandate 2 — Score
 
 Run both canonical 50-question sets against the live endpoint:
-1. **`public.txt`** — 50 Vals-public benchmark questions
-2. **`synthetic_v1.txt`** — 50 held-out questions NOT in the public set
 
-Report: HTTP-OK rate, substantive-answer rate, NIA count, leak-marker
-count, strict-grader pass count, per-family breakdown.
+1. `public.txt` — 50 Vals-public benchmark questions
+2. `synthetic_v1.txt` — 50 held-out questions NOT in the public set
+
+Report: HTTP-OK rate, substantive-answer rate, NIA count, leak-marker count, strict-grader pass count, per-family breakdown.
 
 You are the independent check before an external evaluator does it.
 
 ---
 
 ## Prerequisites
-
 ```bash
 extract() { grep -E "^${1}=" "$HOME/.env" | head -1 | cut -d= -f2; }
 RUNPOD_API_KEY=$(extract RUNPOD_API_KEY)
@@ -73,7 +62,7 @@ start floor is ~263s on Blackwell; budget 15 min before declaring
 # Warm via saveEndpoint, then poll
 curl -sS "https://api.runpod.io/graphql" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"mutation { saveEndpoint(input: { id: \"<ID>\", name: \"<NAME>\", templateId: \"<TID>\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 1, workersMax: 1, idleTimeout: 300, scalerType: \"REQUEST_COUNT\", scalerValue: 1, type: \"LB\", flashBootType: FLASHBOOT }) { id } }"}'
+  -d '{"query":"mutation { saveEndpoint(input: { id: \"<ID>\", name: \"<NAME>\", templateId: \"<TID>\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 1, workersMax: 1, idleTimeout: 60, scalerType: \"QUEUE_DELAY\", scalerValue: 4, type: \"LB\", flashBootType: FLASHBOOT }) { id } }"}'
 for i in $(seq 1 90); do sleep 15; r=$(curl -sS --max-time 12 "https://<ID>.api.runpod.ai/ping" -H "Authorization: Bearer $RUNPOD_API_KEY"); echo "$r"; [[ "$r" == *ready* ]] && break; done
 ```
 

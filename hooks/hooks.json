@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[runpod-serverless] plugin v2.0.0 loaded. Skills: runpod-serverless-deploy, runpod-serverless-debug, runpod-red-team. Slash commands: /rp-deploy /rp-canary /rp-drain /rp-warm /rp-audit.' 1>&2"
+            "command": "echo '[runpod-serverless] plugin v2.1.0 loaded. Skills: runpod-serverless-deploy, runpod-serverless-debug, runpod-red-team. Slash commands: /rp-deploy /rp-canary /rp-drain /rp-warm /rp-audit. Canonical 2026-05-01: QUEUE_DELAY/4, idleTimeout=60, workersMin=0, workersMax>=3, james47kjv/* HF repo policy.' 1>&2"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"C:/Users/innas/.codex/runpod-serverless/hooks/post-tool-use.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.sh\""
           }
         ]
       }

@@ -1,7 +1,7 @@
 {
   "name": "runpod-serverless",
-  "description": "Ship any FastAPI + GPU inference service to RunPod Serverless as a production-grade LOAD_BALANCER endpoint. Covers image-based immutable releases, HF FlashBoot model caching, integrity gating against answer-injection, propose-review-judge agent runtime, red-team canary scoring, scaler-cascade drain, and the 24 pitfalls learned from LAMP1 (canonical guide: C:/Users/innas/runpod_serverless_setup_guide.md).",
-  "version": "2.0.0",
+  "description": "Ship any FastAPI + GPU inference service to RunPod Serverless as a production-grade LOAD_BALANCER endpoint. Covers image-based immutable releases, HF FlashBoot model caching, integrity gating against answer-injection, propose-review-judge agent runtime, red-team canary scoring, scaler-cascade drain, the canonical 2026-05-01 invariants (QUEUE_DELAY/4, idleTimeout=60, workersMin=0, workersMax>=3, james47kjv/* HF repo policy), and the 37 pitfalls learned from LAMP1 (canonical guide: C:/Users/innas/runpod_serverless_setup_guide_v2.md).",
+  "version": "2.1.0",
   "author": {
     "name": "LAMP1 Operator",
     "email": "admin@lamp.ai"

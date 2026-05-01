@@ -9,7 +9,7 @@
     {
       "name": "runpod-serverless",
       "description": "Ship any FastAPI + GPU inference service to RunPod Serverless as a production-grade LOAD_BALANCER endpoint.",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "source": "./",
       "author": {
         "name": "LAMP1 Operator",

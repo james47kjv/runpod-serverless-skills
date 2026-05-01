@@ -16,6 +16,7 @@ import requests
 
 API_BASE = "https://rest.runpod.io/v1"
 GRAPHQL_API_BASE = "https://api.runpod.io/graphql"
+LB_MIN_SCHEDULER_SAFE_WORKERS_MAX = 3
 _PLACEHOLDER_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
@@ -316,10 +317,10 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
             "templateId": template_id,
             "gpuCount": int(spec.get("gpuCount", 1)),
             "workersMin": int(spec.get("workersMin", 0)),
-            "workersMax": int(spec.get("workersMax", 1)),
-            "idleTimeout": int(spec.get("idleTimeout", 600)),
-            "scalerType": spec.get("scalerType", "REQUEST_COUNT"),
-            "scalerValue": int(spec.get("scalerValue", 1)),
+            "workersMax": int(spec.get("workersMax", LB_MIN_SCHEDULER_SAFE_WORKERS_MAX)),
+            "idleTimeout": int(spec.get("idleTimeout", 60)),
+            "scalerType": spec.get("scalerType", "QUEUE_DELAY"),
+            "scalerValue": int(spec.get("scalerValue", 4)),
             "type": "LB",
             "modelName": str(spec.get("modelName") or ""),
             # Pitfall #23: endpoints MUST be GLOBAL. Hard-pin to None — any spec
@@ -344,8 +345,8 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
         # No region pinning on serverless GPU endpoints. See pitfall #23.
         "dataCenterIds": [],
         "workersMin": int(spec.get("workersMin", 0)),
-        "workersMax": int(spec.get("workersMax", 1)),
-        "idleTimeout": int(spec.get("idleTimeout", 600)),
+        "workersMax": int(spec.get("workersMax", LB_MIN_SCHEDULER_SAFE_WORKERS_MAX)),
+        "idleTimeout": int(spec.get("idleTimeout", 60)),
         "executionTimeoutMs": int(spec.get("executionTimeoutMs", 330000)),
         "scalerType": spec.get("scalerType", "QUEUE_DELAY"),
         "scalerValue": int(spec.get("scalerValue", 4)),
@@ -602,7 +603,7 @@ def _require_port_health(spec: dict[str, Any]) -> None:
     If PORT_HEALTH is unset, the worker boots cleanly, FastAPI serves /ping
     correctly, but the gateway never sees it and the endpoint stays
     `unhealthy` forever with no error in any log. This is the silent killer
-    documented in pitfalls-35.md #25 and setup-guide §6.1.2.
+    documented in pitfalls-37.md #25 and setup-guide §6.1.2.
     """
     if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
         return
@@ -614,7 +615,7 @@ def _require_port_health(spec: dict[str, Any]) -> None:
             "appear healthy in container logs but be invisible to the "
             "gateway, and the endpoint will stay `unhealthy` forever with "
             "no error in any log. Set PORT_HEALTH in env (same value as PORT "
-            "for the standard single-port case). See pitfalls-35.md #25 and "
+            "for the standard single-port case). See pitfalls-37.md #25 and "
             "setup-guide §6.1.2."
         )
 
@@ -628,7 +629,7 @@ def _require_docker_start_cmd(spec: dict[str, Any]) -> None:
     your start.sh, dies with no args in milliseconds, and the worker exits
     code 1 with an EMPTY Container logs panel. Symptom is identical to a
     corrupt image but the cause is a missing two-line spec field. See
-    pitfalls-35.md #26 and setup-guide §6.1.3.
+    pitfalls-37.md #26 and setup-guide §6.1.3.
     """
     cmd = spec.get("dockerStartCmd")
     if not isinstance(cmd, list) or not cmd:
@@ -639,14 +640,37 @@ def _require_docker_start_cmd(spec: dict[str, Any]) -> None:
             "start.sh never runs and the worker exits code 1 with an empty "
             "Container logs panel. Set dockerStartCmd to "
             '["bash", "/app/start.sh"] (path must match where Dockerfile '
-            "copies start.sh). See pitfalls-35.md #26 and setup-guide §6.1.3."
+            "copies start.sh). See pitfalls-37.md #26 and setup-guide §6.1.3."
+        )
+
+
+def _require_scheduler_safe_workers_max(spec: dict[str, Any]) -> None:
+    """Refuse to arm a LOAD_BALANCER endpoint with too few candidate hosts."""
+    if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
+        return
+    try:
+        workers_max = int(spec["workersMax"])
+    except (KeyError, TypeError, ValueError):
+        raise SystemExit(
+            "spec is missing workersMax — RunPod LOAD_BALANCER endpoints need "
+            f"workersMax>={LB_MIN_SCHEDULER_SAFE_WORKERS_MAX}. Use workersMax=0 "
+            "only for explicit hard drains. See pitfalls-37.md #37 and "
+            "setup-guide §6.1.14."
+        )
+    if workers_max < LB_MIN_SCHEDULER_SAFE_WORKERS_MAX:
+        raise SystemExit(
+            "workersMax=1/2 is a RunPod LOAD_BALANCER scheduling anti-pattern: "
+            "too few candidate host slots can stay throttled indefinitely. "
+            f"Set workersMax>={LB_MIN_SCHEDULER_SAFE_WORKERS_MAX}. Use "
+            "workersMax=0 only for explicit hard drains. See pitfalls-37.md "
+            "#37 and setup-guide §6.1.14."
         )
 
 
 _FORBIDDEN_HF_CACHE_PATTERNS_BASH = (
     # Bash `:=` is a NO-OP when the var is already set (TEI/TGI/vLLM/NIM
     # bases preset HUGGINGFACE_HUB_CACHE=/data and HF_HOME=/data in image
-    # ENV). See pitfalls-35.md #31 and setup-guide §6.1.8.
+    # ENV). See pitfalls-37.md #31 and setup-guide §6.1.8.
     re.compile(r':\s*"\$\{HUGGINGFACE_HUB_CACHE\s*:='),
     re.compile(r':\s*"\$\{HF_HOME\s*:='),
 )
@@ -660,6 +684,83 @@ _FORBIDDEN_HF_CACHE_PATTERNS_PY = (
 )
 
 
+# Canonical 2026-05-01 invariants - mirror runpod_drift_monitor.py.
+# Reject specs that drift from canonical state at deploy-time so the
+# 4-hourly drift monitor never has to autoheal them.
+_CANONICAL_OWNER = "james47kjv"
+_CANONICAL_SCALER_TYPE = "QUEUE_DELAY"
+_CANONICAL_SCALER_VALUE = 4
+_CANONICAL_IDLE_VALUE = 60
+_CANONICAL_EXEC_TIMEOUT_MAX_MS = 1800000
+_REPO_BEARING_ENV_KEYS = (
+    "NONNON_HF_MODEL_REPO", "LAMP_HF_MODEL_REPO", "MODEL_NAME", "MODEL_ID",
+    "QWEN3_TTS_MODEL", "SERVED_MODEL_NAME",
+    "QWEN3_RERANKER_MODEL_PATH", "QWEN3_ASR_MODEL_PATH",
+)
+
+
+def _require_canonical_scaler(spec: dict[str, Any]) -> None:
+    if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
+        return
+    scaler = spec.get("scalerType")
+    if scaler != _CANONICAL_SCALER_TYPE:
+        raise SystemExit(
+            f"Spec scalerType={scaler!r} violates canonical-2026-05-01 policy. "
+            f"Must be {_CANONICAL_SCALER_TYPE!r} (REQUEST_COUNT memorises traffic "
+            "and respawns workers - see runpod_serverless_setup_guide_v2.md \u00a76.1.18)."
+        )
+    value = int(spec.get("scalerValue", 0))
+    if value != _CANONICAL_SCALER_VALUE:
+        raise SystemExit(
+            f"Spec scalerValue={value} violates canonical policy; must be "
+            f"{_CANONICAL_SCALER_VALUE}. See setup-guide v2 \u00a76.1.18."
+        )
+
+
+def _require_canonical_idle_timeout(spec: dict[str, Any]) -> None:
+    if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
+        return
+    idle = int(spec.get("idleTimeout", 0))
+    if idle != _CANONICAL_IDLE_VALUE:
+        raise SystemExit(
+            f"Spec idleTimeout={idle}s violates canonical policy "
+            f"(must be exactly {_CANONICAL_IDLE_VALUE}s). "
+            "See runpod_serverless_setup_guide_v2.md \u00a76.1.7.2."
+        )
+
+
+def _require_canonical_exec_timeout(spec: dict[str, Any]) -> None:
+    if (spec.get("endpointType") or "").upper() != "LOAD_BALANCER":
+        return
+    et = int(spec.get("executionTimeoutMs", 0))
+    if et > _CANONICAL_EXEC_TIMEOUT_MAX_MS:
+        raise SystemExit(
+            f"Spec executionTimeoutMs={et} exceeds the 30-minute canonical "
+            f"ceiling ({_CANONICAL_EXEC_TIMEOUT_MAX_MS} ms)."
+        )
+
+
+def _require_james47kjv_repo_policy(spec: dict[str, Any]) -> None:
+    """Refuse any spec that references a non-james47kjv/* HF repo."""
+    model_name = (spec.get("modelName") or "").strip()
+    if model_name and "/" in model_name and not model_name.startswith(_CANONICAL_OWNER + "/"):
+        raise SystemExit(
+            f"Spec modelName={model_name!r} violates the james47kjv/* "
+            "private-repo policy. See runpod_serverless_setup_guide_v2.md \u00a76.1.20."
+        )
+    env = spec.get("env") or {}
+    for key in _REPO_BEARING_ENV_KEYS:
+        value = env.get(key)
+        if not isinstance(value, str) or "/" not in value:
+            continue
+        if not value.startswith(_CANONICAL_OWNER + "/"):
+            raise SystemExit(
+                f"Spec env.{key}={value!r} references a non-james47kjv/* repo. "
+                "See setup-guide v2 \u00a76.1.20."
+            )
+
+
+
 def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
     """Refuse to push if start.sh / boot.py uses `:=` or `setdefault` for HF cache vars.
 
@@ -668,7 +769,7 @@ def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
     var is already set, so conditional assignment is silently skipped —
     runtime detection logs `location=runpod-host` but `printenv` shows
     `/data`, model loader hangs forever on ENOENT with no error in any
-    log. See pitfalls-35.md #31 and setup-guide §6.1.8.
+    log. See pitfalls-37.md #31 and setup-guide §6.1.8.
 
     Scans the spec's parent directory and adjacent service-folder for
     start.sh and boot.py files.
@@ -707,7 +808,7 @@ def _reject_conditional_hf_cache_assignment(spec_path: Path) -> None:
                     "in any log. Use UNCONDITIONAL assignment: "
                     'HUGGINGFACE_HUB_CACHE=\"...\" in bash, '
                     'os.environ[\"HUGGINGFACE_HUB_CACHE\"] = \"...\" in '
-                    "Python. See pitfalls-35.md #31 and setup-guide "
+                    "Python. See pitfalls-37.md #31 and setup-guide "
                     "§6.1.8."
                 )
 
@@ -723,6 +824,11 @@ def main() -> int:
     _reject_region_pinning(spec)
     _require_port_health(spec)
     _require_docker_start_cmd(spec)
+    _require_scheduler_safe_workers_max(spec)
+    _require_canonical_scaler(spec)
+    _require_canonical_idle_timeout(spec)
+    _require_canonical_exec_timeout(spec)
+    _require_james47kjv_repo_policy(spec)
     _reject_conditional_hf_cache_assignment(Path(args.spec))
     image_name = _resolve_placeholders(args.image or spec.get("registryImage") or "")
     if not image_name:

@@ -35,7 +35,7 @@ throttle() {
     curl -sS "https://api.runpod.io/graphql" \
         -H "Authorization: Bearer $RUNPOD_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"query\":\"mutation { saveEndpoint(input: { id: \\\"$endpoint_id\\\", name: \\\"<APP>-staging\\\", templateId: \\\"<STAGING_TEMPLATE_ID>\\\", gpuIds: \\\"BLACKWELL_96,BLACKWELL_180,HOPPER_141\\\", gpuCount: 1, workersMin: $min, workersMax: $max, idleTimeout: 300, scalerType: \\\"REQUEST_COUNT\\\", scalerValue: 1, type: \\\"LB\\\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }\"}" \
+        -d "{\"query\":\"mutation { saveEndpoint(input: { id: \\\"$endpoint_id\\\", name: \\\"<APP>-staging\\\", templateId: \\\"<STAGING_TEMPLATE_ID>\\\", gpuIds: \\\"BLACKWELL_96,BLACKWELL_180,HOPPER_141\\\", gpuCount: 1, workersMin: $min, workersMax: $max, idleTimeout: 60, scalerType: \\\"QUEUE_DELAY\\\", scalerValue: 4, type: \\\"LB\\\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }\"}" \
         2>&1 | py -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d) if 'errors' not in d else d)"
 }
 
@@ -54,7 +54,7 @@ DEPLOY_PID=$!
 sleep 30
 
 log "Forcing workersMin=1 to spawn a worker (watch budget: ${BOOT_BUDGET_SEC}s)"
-throttle 1 1
+throttle 1 3
 
 start_ts=$(date -u +%s)
 deadline=$((start_ts + BOOT_BUDGET_SEC))

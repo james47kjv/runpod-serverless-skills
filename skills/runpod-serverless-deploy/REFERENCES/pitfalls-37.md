@@ -1,6 +1,7 @@
-# 22 RunPod Serverless Pitfalls — Symptom / Root Cause / Fix
+# 37 RunPod Serverless Pitfalls — Symptom / Root Cause / Fix
 
-Consolidated from the LAMP1 2026-04-22 → 2026-04-23 deploy cycle. Sorted by
+Consolidated from the LAMP1 2026-04-22 → 2026-04-23 deploy cycle and the
+NONNON v8 cutover (2026-04-25 → 2026-04-26). Sorted by
 historical pain level. Every one of these lost us hours; skip none.
 
 ---
@@ -940,3 +941,60 @@ historical pain level. Every one of these lost us hours; skip none.
   shrinks the scheduler's eligible host pool, which DECREASES
   reliability and INCREASES cold-start latency. Right-size aggressively.
 - **Reference:** setup-guide §6.1.12.
+
+### 37. `workersMax=1/2` → throttled forever on too few candidate hosts
+- **Symptom:** Endpoint shows `workersStandby=1`, `workers=0`, or a worker
+  stuck at `desiredStatus=EXITED` / `lastStatusChange="Rented by User"` with
+  no container logs. The RunPod UI may say `throttled`. Rebuilding diagnostic
+  images produces no new logs because the container never actually receives
+  CPU time.
+- **Cause:** `workersMax` is not just a billing/concurrency cap; on
+  LOAD_BALANCER endpoints it also controls how many candidate host slots RunPod
+  can pursue. With `workersMax=1`, the endpoint can be tied to one occupied
+  host and wait indefinitely instead of migrating to another free host. `2`
+  improves odds but still leaves very little scheduling surface.
+- **Fix:** Use `workersMax>=3` for every armed endpoint. Keep `workersMin=0`
+  for scale-to-zero idle cost if desired. `workersMax` is a cap, not a
+  reservation: with `workersMin=0, workersMax=3`, you still pay $0 while idle
+  and normally pay for only the actually-running worker. Use `workersMax=0`
+  only for explicit hard drains.
+- **Detection:** Flag every spec or `saveEndpoint` warm command that restores
+  `workersMax` to `1` or `2`. If an endpoint is currently stuck, save it with
+  `workersMin=1, workersMax=3` and preserve the same template/image.
+- **Reference:** setup-guide §6.1.14.
+
+## Capacity scheduling
+
+### 37. `workersMax: 1` puts the endpoint in `throttled` forever (the most expensive single character)
+- **Symptom:** Worker shows `Throttled` in the Workers tab. `Logs` tab is completely empty except for one line at most: `worker is ready` (this is RunPod's queue-slot signal, not a container ready signal). `/health` REST endpoint returns `"throttled": 1, "running": 0, "idle": 0`. State persists for hours despite plenty of GPU supply elsewhere on RunPod. Looks identical to a hung container, broken image, or `/ping` handler bug. **It is none of those.**
+- **Cause:** `workersMax: 1` allocates exactly **one (host, GPU) candidate slot** for your endpoint. If that specific host is currently busy with another tenant's workload, your worker enters `throttled` and waits for that exact host to free up — RunPod will not migrate you to a different free host because the slot is "yours". With `workersMax: 2-5`, RunPod allocates multiple candidate slots and routes the request to whichever frees up first.
+- **From RunPod's docs:** "Setting max workers to 1 is **not recommended** because there is a **very high chance that your worker will become throttled**, and your requests will sit in the queue for a long time before being processed." "If you set max workers to a value of **2 to 5**, RunPod will provide you with **additional workers (up to a maximum of 5)** to help prevent your workers from being throttled."
+- **Cost: zero impact.** `workersMax` is a *cap*, not an allocation. You only pay for actually-running workers. With `workersMin: 0, workersMax: 3`, idle still costs $0; you just get 3 host candidates to schedule against.
+- **Validated remediation (NONNON 2026-04-26):** ASR endpoint sat in `throttled:1` for ~12 hours with zero container logs. We rebuilt three diagnostic images thinking it was a stdout-buffering / pipe-blocking / `/ping` handler bug. **None of them ever ran.** Single GraphQL `saveEndpoint` mutation `workersMax: 1 → 3` immediately produced `initializing:3, throttled:0` — all 3 candidates landed on free hosts. Container booted and produced full logs ~5 min later. Same fix worked on memory-brain.
+- **Fix.** Set `workersMax: 3` (or higher up to 5 if you have legitimate concurrency needs):
+  ```graphql
+  mutation { saveEndpoint(input: {
+    id: "<endpoint_id>" name: "<name>" templateId: "<tpl>"
+    gpuIds: "<pools>" gpuCount: 1
+    workersMin: 0 workersMax: 3
+    idleTimeout: 60 scalerType: "QUEUE_DELAY" scalerValue: 4
+    type: "LB" flashBootType: FLASHBOOT
+  }) { id workersMax } }
+  ```
+  Update both the `*.production.json` spec file AND the live endpoint via mutation. The audit script:
+  ```bash
+  python -c "
+  import json, sys, os
+  fail = []
+  for spec in os.listdir('runpod-serverless-workers/deploy/'):
+      if not spec.endswith('.production.json'): continue
+      d = json.load(open(f'runpod-serverless-workers/deploy/{spec}'))
+      if d.get('workersMax', 0) < 3:
+          fail.append(f'{spec}: wmax={d.get(\"workersMax\")} (must be >= 3)')
+  if fail: print('FAIL:'); [print(f'  {x}') for x in fail]; sys.exit(1)
+  print('OK')
+  "
+  ```
+- **Companion to pitfalls #23 (region pinning) and #35 (over-provisioning).** All three are "scheduler can't find a host for you" failures. Trio of fixes: (a) no region pin, (b) right-sized disk + smallest-fitting GPU pool, (c) `workersMax >= 3`.
+- **Diagnostic order:** if you see ZERO container logs (not "logs that stop partway") after >2 minutes, **check `Throttled` state FIRST** before suspecting any code bug. Container that was never given CPU time can't print anything, no matter how many `flush=True` calls you add.
+- **References:** [RunPod Glossary](https://docs.runpod.io/glossary), [Mastering Serverless Scaling](https://www.runpod.io/blog/serverless-scaling-strategy-runpod), [What does throttled mean?](https://www.answeroverflow.com/m/1192648582847807539), setup-guide §6.1.14.

@@ -34,7 +34,7 @@ RUNPOD_API_KEY=$(extract RUNPOD_API_KEY)
 
 curl -sS "https://api.runpod.io/graphql" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"mutation { saveEndpoint(input: { id: \"<ID>\", name: \"<NAME>\", templateId: \"<TID>\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 300, scalerType: \"REQUEST_COUNT\", scalerValue: 1, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
+  -d '{"query":"mutation { saveEndpoint(input: { id: \"<ID>\", name: \"<NAME>\", templateId: \"<TID>\", gpuIds: \"BLACKWELL_96,BLACKWELL_180,HOPPER_141\", gpuCount: 1, workersMin: 0, workersMax: 0, idleTimeout: 60, scalerType: \"QUEUE_DELAY\", scalerValue: 4, type: \"LB\", flashBootType: FLASHBOOT }) { id workersMin workersMax } }"}'
 ```
 
 ## Poll
