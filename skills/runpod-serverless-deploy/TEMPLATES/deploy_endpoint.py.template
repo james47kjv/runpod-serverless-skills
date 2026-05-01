@@ -312,6 +312,7 @@ def _upsert_template(
 def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
     endpoint_type = spec.get("endpointType", "").strip().upper()
     if endpoint_type == "LOAD_BALANCER":
+        model_name = str(spec.get("modelName") or "")
         payload: dict[str, Any] = {
             "name": spec["name"],
             "templateId": template_id,
@@ -322,7 +323,7 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
             "scalerType": spec.get("scalerType", "QUEUE_DELAY"),
             "scalerValue": int(spec.get("scalerValue", 4)),
             "type": "LB",
-            "modelName": str(spec.get("modelName") or ""),
+            "modelReferences": [model_name] if model_name else [],
             # Pitfall #23: endpoints MUST be GLOBAL. Hard-pin to None — any spec
             # that tried to set dataCenterIds/locations/region etc. is refused
             # by _reject_region_pinning() at startup; this is defense-in-depth.
@@ -330,6 +331,9 @@ def _endpoint_payload(spec: dict[str, Any], template_id: str) -> dict[str, Any]:
             "networkVolumeId": spec.get("networkVolumeId"),
             "flashBootType": GraphQLEnum("FLASHBOOT") if bool(spec.get("flashboot", True)) else GraphQLEnum("NONE"),
         }
+        hf_token = (spec.get("env") or {}).get("HF_TOKEN")
+        if isinstance(hf_token, str) and hf_token:
+            payload["env"] = [{"key": "HF_TOKEN", "value": hf_token}]
         if spec.get("gpuIds"):
             payload["gpuIds"] = str(spec["gpuIds"])
         if spec.get("gpuTypeIds"):
@@ -417,11 +421,13 @@ def _save_lb_endpoint(
         "scalerType": payload["scalerType"],
         "scalerValue": payload["scalerValue"],
         "type": payload["type"],
-        "modelName": payload.get("modelName") or None,
+        "modelReferences": payload.get("modelReferences") or [],
         "locations": _lb_locations_value(payload.get("locations")),
         "networkVolumeId": payload.get("networkVolumeId"),
         "flashBootType": payload.get("flashBootType"),
     }
+    if payload.get("env"):
+        mutation_payload["env"] = payload["env"]
     if endpoint_id:
         mutation_payload["id"] = endpoint_id
     items = ", ".join(
